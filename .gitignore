@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Logs & OS
+logs/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

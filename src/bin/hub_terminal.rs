@@ -87,6 +87,7 @@ struct HubApp {
 
 impl HubApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        aegis_bio_demo::install_aerospace_fonts(&cc.egui_ctx);
         cc.egui_ctx.style_mut(|s| {
             s.spacing.interact_size.y = 32.0;
             s.spacing.item_spacing = Vec2::new(8.0, 8.0);
@@ -129,7 +130,7 @@ impl HubApp {
             }
         };
 
-        Self {
+        let app = Self {
             pal: Pal::default(),
             tab: HubTab::Crew,
             state,
@@ -143,7 +144,9 @@ impl HubApp {
             meal_feedback: None,
             tcp_rx: rx,
             tcp_online,
-        }
+        };
+        app.apply_visuals(&cc.egui_ctx);
+        app
     }
 
     fn apply_visuals(&self, ctx: &egui::Context) {
@@ -151,6 +154,8 @@ impl HubApp {
         let mut v = egui::Visuals::dark();
         v.panel_fill = p.bg;
         v.window_fill = p.panel;
+        v.window_shadow = egui::epaint::Shadow::NONE;
+        v.popup_shadow = egui::epaint::Shadow::NONE;
         v.extreme_bg_color = p.bar_bg;
         v.override_text_color = Some(p.text);
         v.selection.bg_fill = p.accent;
@@ -204,7 +209,6 @@ impl HubApp {
 
 impl eframe::App for HubApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.apply_visuals(ctx);
         self.poll_tcp_packets();
 
         let t = ctx.input(|i| i.time);
@@ -215,11 +219,16 @@ impl eframe::App for HubApp {
 
         // Top Bar
         egui::TopBottomPanel::top("hub_header")
-            .frame(Frame::none().fill(self.pal.panel).inner_margin(egui::Margin::symmetric(14.0, 10.0)))
+            .frame(
+                Frame::none()
+                    .fill(self.pal.panel)
+                    .stroke(Stroke::new(1.5_f32, self.pal.edge))
+                    .inner_margin(egui::Margin::symmetric(14.0, 10.0)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new("AEGIS-BIO // MISSION HUB TERMINAL")
+                        RichText::new("AEGIS-BIO // Mission Hub Terminal")
                             .size(18.0)
                             .strong()
                             .color(self.pal.accent),
@@ -242,7 +251,7 @@ impl eframe::App for HubApp {
                     if tab_btn(ui, self.tab == HubTab::Pantry, "Yemek Deposu (ISS)", self.pal.accent).clicked() {
                         self.tab = HubTab::Pantry;
                     }
-                    if tab_btn(ui, self.tab == HubTab::HubOnly, "🔒 Hub-Only (Radyasyon & Gizli)", self.pal.danger).clicked() {
+                    if tab_btn(ui, self.tab == HubTab::HubOnly, "Hub-Only (Radyasyon & Gizli)", self.pal.danger).clicked() {
                         self.tab = HubTab::HubOnly;
                     }
 
@@ -259,9 +268,23 @@ impl eframe::App for HubApp {
                         };
                         let tcp_col = if self.tcp_online { self.pal.ok } else { self.pal.danger };
                         badge(ui, &tcp_text, tcp_col, self.pal.bar_bg);
-                        badge(ui, "MARS DTN GECİKME: 20d 00s", self.pal.warn, self.pal.bar_bg);
+                        badge(ui, "Mars DTN Delay: 20m 00s", self.pal.warn, self.pal.bar_bg);
                     });
                 });
+            });
+
+        // Left Sidebar: Live Crew Roster & Quick Phase/Anomaly Controls
+        egui::SidePanel::left("crew_roster_sidebar")
+            .resizable(false)
+            .exact_width(248.0)
+            .frame(
+                Frame::none()
+                    .fill(self.pal.panel)
+                    .stroke(Stroke::new(1.5_f32, self.pal.edge))
+                    .inner_margin(egui::Margin::same(12.0)),
+            )
+            .show(ctx, |ui| {
+                self.render_left_sidebar(ui);
             });
 
         // Main Body
@@ -278,6 +301,118 @@ impl eframe::App for HubApp {
 }
 
 impl HubApp {
+    fn render_left_sidebar(&mut self, ui: &mut Ui) {
+        let p = self.pal;
+        ui.label(RichText::new("Crew Roster").size(15.0).strong().color(p.text));
+        ui.add_space(6.0);
+
+        let mut pick_id: Option<String> = None;
+        for astro in &self.state.crew {
+            let alerts = evaluate_alerts(astro);
+            let is_sel = self.selected_subject.as_deref() == Some(astro.subject_id.as_str());
+            let has_crit = alerts.iter().any(|a| a.level == AlertLevel::Critical);
+            let has_warn = alerts.iter().any(|a| a.level == AlertLevel::Warning);
+            let status_col = if has_crit {
+                p.danger
+            } else if has_warn {
+                p.warn
+            } else {
+                p.ok
+            };
+
+            let resp = Frame::none()
+                .fill(if is_sel { p.panel_hi } else { p.bar_bg })
+                .stroke(Stroke::new(if is_sel || has_crit { 1.8_f32 } else { 1.0_f32 }, if is_sel { p.accent } else if has_crit { p.danger } else { p.edge }))
+                .rounding(Rounding::same(8.0))
+                .inner_margin(8.0)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let (dot_r, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot_r.center(), 4.5, status_col);
+                        ui.label(RichText::new(&astro.name).size(12.5).strong().color(p.text));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!("{:.0}", astro.bpm))
+                                    .size(13.0)
+                                    .strong()
+                                    .monospace()
+                                    .color(status_col),
+                            );
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&astro.subject_id).size(10.5).monospace().color(p.dim));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(astro.mission_phase.label()).size(10.5).monospace().color(p.dim));
+                        });
+                    });
+                });
+            if resp.response.interact(egui::Sense::click()).clicked() {
+                pick_id = Some(astro.subject_id.clone());
+            }
+            ui.add_space(4.0);
+        }
+
+        if let Some(id) = pick_id {
+            self.selected_subject = Some(id);
+            self.meal_feedback = None;
+            self.tab = HubTab::Crew;
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Phase & Anomaly Control").size(14.0).strong().color(p.text));
+        ui.add_space(4.0);
+
+        let target_id = self
+            .selected_subject
+            .clone()
+            .or_else(|| self.state.crew.first().map(|c| c.subject_id.clone()));
+
+        if let Some(id) = target_id {
+            if let Some(idx) = self.state.crew.iter().position(|a| a.subject_id == id) {
+                let name = self.state.crew[idx].name.clone();
+                let cur_phase = self.state.crew[idx].mission_phase;
+                let cur_panic = self.state.crew[idx].panic;
+                ui.label(RichText::new(format!("Target: {name}")).size(11.5).color(p.dim));
+                ui.add_space(4.0);
+
+                for pair in MissionPhase::ALL.chunks(2) {
+                    ui.columns(2, |c| {
+                        for (i, &ph) in pair.iter().enumerate() {
+                            let active = cur_phase == ph;
+                            let btn = egui::Button::new(
+                                RichText::new(ph.label())
+                                    .size(11.0)
+                                    .color(if active { Color32::BLACK } else { p.text }),
+                            )
+                            .fill(if active { p.accent } else { p.bar_bg });
+                            if c[i].add_sized([c[i].available_width(), 28.0], btn).clicked() {
+                                self.state.crew[idx].mission_phase = ph;
+                                self.state.push_audit(format!("[HUB] {name} fazı güncellendi: {}", ph.label()));
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+
+                ui.add_space(4.0);
+                let panic_lbl = if cur_panic { "Clear Panic Alert" } else { "Trigger Stress / Panic" };
+                let panic_fill = if cur_panic { p.ok } else { p.danger };
+                let p_btn = egui::Button::new(RichText::new(panic_lbl).strong().color(Color32::BLACK)).fill(panic_fill);
+                if ui.add_sized([ui.available_width(), 32.0], p_btn).clicked() {
+                    self.state.crew[idx].panic = !cur_panic;
+                    self.state.push_audit(format!(
+                        "[HUB] {name} panik durumu: {}",
+                        if !cur_panic { "AKTİF" } else { "TEMİZLENDİ" }
+                    ));
+                }
+            }
+        }
+    }
+
     fn render_crew_tab(&mut self, ui: &mut Ui) {
         let p = self.pal;
         ui.horizontal(|ui| {
@@ -346,15 +481,16 @@ impl HubApp {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.label(RichText::new("ANLIK NABIZ").size(10.5).color(p.dim));
+                                        ui.label(RichText::new("Canlı Nabız").size(10.5).color(p.dim));
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 RichText::new(format!("{:.0}", astro.bpm))
                                                     .size(28.0)
                                                     .strong()
-                                                    .color(p.danger),
+                                                    .monospace()
+                                                    .color(if has_crit { p.danger } else { p.text }),
                                             );
-                                            ui.label(RichText::new("BPM").size(12.0).color(p.dim));
+                                            ui.label(RichText::new("BPM").size(12.0).monospace().color(p.dim));
                                         });
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

@@ -1300,4 +1300,162 @@ mod tests {
         db.seed_nasa_data().expect("idempotent reseed");
         assert_eq!(db.load_dataset_provenance().unwrap().len(), 11);
     }
+
+    #[test]
+    fn test_nasa_data_through_calc_logic() {
+        let mut db = Database::open_in_memory_fallback();
+        db.seed_demo_data().expect("seed_demo_data");
+
+        // 1. Ephemeris: Compare JPL one_way_light_min vs calc::calc_one_way_light_min
+        let ephem = db.load_ephemeris_all().expect("ephem");
+        let mut max_err_min = 0.0_f64;
+        for row in &ephem {
+            let calc_min = calc::calc_one_way_light_min(row.distance_au);
+            let err = (calc_min - row.one_way_light_min).abs();
+            if err > max_err_min {
+                max_err_min = err;
+            }
+            assert!(err < 0.01, "light delay mismatch on {}: {}", row.mission_date, err);
+        }
+        let (interp_au, interp_min) =
+            calc::interpolate_ephemeris(ephem[0].distance_au, ephem[1].distance_au, 0.5);
+        println!(
+            "[EPHEMERIS] rows={}, day0={} ({:.6} AU, JPL={:.4} min, calc={:.4} min), max_err={:.6} min, mid_interp=({:.6} AU, {:.4} min)",
+            ephem.len(),
+            ephem[0].mission_date,
+            ephem[0].distance_au,
+            ephem[0].one_way_light_min,
+            calc::calc_one_way_light_min(ephem[0].distance_au),
+            max_err_min,
+            interp_au,
+            interp_min
+        );
+
+        // 2. EDA RR-1 Environment (289 pts): evaluate_safety & calc_sans_risk
+        let eda = db.load_eda_environment().expect("eda");
+        let iss_co2: Vec<f64> = eda.iter().filter_map(|e| e.co2_iss_ppm).collect();
+        let gnd_co2: Vec<f64> = eda.iter().filter_map(|e| e.co2_ground_ppm).collect();
+        let iss_min = iss_co2.iter().copied().fold(f64::INFINITY, f64::min);
+        let iss_max = iss_co2.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let iss_avg = iss_co2.iter().sum::<f64>() / iss_co2.len() as f64;
+        let gnd_avg = gnd_co2.iter().sum::<f64>() / gnd_co2.len() as f64;
+
+        let mut hazard_triggers = 0_usize;
+        for &co2 in &iss_co2 {
+            let alerts = calc::evaluate_safety(&calc::SafetyEvalInput {
+                phase: "ORBIT",
+                hr_bpm: 78.0,
+                resting_hr_bpm: 68.0,
+                sbp_mmhg: 118.0,
+                spo2_pct: 98.0,
+                tissue_o2_pct: Some(94.0),
+                blood_n2_idx: Some(1.0),
+                suit_pressure_kpa: None,
+                radiation_usv_hr: 0.40,
+                cabin_co2_ppm: co2,
+                cabin_o2_pct: Some(20.9),
+                hub_distance_m: 150.0,
+                comms_online: true,
+            });
+            if alerts.hazard_danger {
+                hazard_triggers += 1;
+            }
+        }
+        let (sans_low_na, tier_low_na) = calc::calc_sans_risk(1500.0, iss_avg, "ORBIT");
+        let (sans_high_na, tier_high_na) = calc::calc_sans_risk(3200.0, iss_max, "ORBIT");
+        println!(
+            "[EDA CO2] pts={}, ISS min/avg/max={:.1}/{:.1}/{:.1} ppm, Ground avg={:.1} ppm, hazard_triggers(>3000ppm)={}, SANS(1500mg Na, avg CO2)={:.2} ({}), SANS(3200mg Na, max CO2)={:.2} ({})",
+            eda.len(),
+            iss_min,
+            iss_avg,
+            iss_max,
+            gnd_avg,
+            hazard_triggers,
+            sans_low_na,
+            tier_low_na,
+            sans_high_na,
+            tier_high_na
+        );
+        assert_eq!(eda.len(), 289);
+        assert!(sans_low_na > 0.0 && sans_low_na <= 100.0);
+
+        // 3. RadLab 2013-01-01 (1044 pts): cumulative dose & safety check
+        let rad = db.load_radiation_series().expect("rad");
+        let mut rad_min = f64::INFINITY;
+        let mut rad_max = f64::NEG_INFINITY;
+        let mut rad_sum = 0.0_f64;
+        let mut cum_dose_ugy = 0.0_f64;
+        let mut valid_intervals = 0_usize;
+        let mut rad_hazards = 0_usize;
+        for pt in &rad {
+            let r = pt.absorbed_dose_rate_ugy_hr;
+            rad_min = rad_min.min(r);
+            rad_max = rad_max.max(r);
+            rad_sum += r;
+            if let Some(d) = pt.interval_dose_ugy {
+                cum_dose_ugy += d;
+                valid_intervals += 1;
+            }
+            let alerts = calc::evaluate_safety(&calc::SafetyEvalInput {
+                phase: "ORBIT",
+                hr_bpm: 78.0,
+                resting_hr_bpm: 68.0,
+                sbp_mmhg: 118.0,
+                spo2_pct: 98.0,
+                tissue_o2_pct: Some(94.0),
+                blood_n2_idx: Some(1.0),
+                suit_pressure_kpa: None,
+                radiation_usv_hr: r,
+                cabin_co2_ppm: 1200.0,
+                cabin_o2_pct: Some(20.9),
+                hub_distance_m: 150.0,
+                comms_online: true,
+            });
+            if alerts.hazard_danger {
+                rad_hazards += 1;
+            }
+        }
+        println!(
+            "[RADLAB] pts={}, min/avg/max={:.2}/{:.2}/{:.2} uGy/hr, valid_intervals={}, cum_dose={:.2} uGy, hazard_triggers(>50)={}",
+            rad.len(),
+            rad_min,
+            rad_sum / rad.len() as f64,
+            rad_max,
+            valid_intervals,
+            cum_dose_ugy,
+            rad_hazards
+        );
+        assert_eq!(rad.len(), 1044);
+        assert!(cum_dose_ugy > 0.0);
+
+        // 4. Research Lab Observations (23,096 rows): domain breakdown & ref-range flags
+        let all_obs = db
+            .load_research_lab_observations(None, None, 30_000)
+            .expect("all obs");
+        let above = all_obs.iter().filter(|o| o.status_flag == "ABOVE_REF").count();
+        let below = all_obs.iter().filter(|o| o.status_flag == "BELOW_REF").count();
+        let in_rng = all_obs.iter().filter(|o| o.status_flag == "IN_RANGE").count();
+        let no_ref = all_obs.iter().filter(|o| o.status_flag == "NO_REF").count();
+        println!(
+            "[RESEARCH LABS] total={}, IN_RANGE={}, ABOVE_REF={}, BELOW_REF={}, NO_REF={}",
+            all_obs.len(),
+            in_rng,
+            above,
+            below,
+            no_ref
+        );
+        assert_eq!(all_obs.len(), 23096);
+
+        // 5. Crew & Nutrition / Osteoporosis / Haldane N2 logic with seeded DB
+        let (p_n2, n2_idx) = calc::update_tissue_n2(79.0, 0.0, 29.6, 2700.0);
+        let (prot_score, osteo_tier) = calc::calc_osteoporosis_risk(85.0, 950.0, 720.0);
+        let kcal_s = calc::calc_kcal_per_sec(130.0, 78.0, 35, "M");
+        let sweat_s = calc::calc_sweat_ml_per_sec(kcal_s * 60.0, 37.4);
+        println!(
+            "[PHYSIOLOGY] Haldane 45m prebreathe(29.6kPa): pN2={:.2} kPa, R={:.2} | Osteo(85,950mg,720IU)={:.1} ({}) | Keytel(130bpm,78kg,35M)={:.3} kcal/s, sweat={:.4} mL/s",
+            p_n2, n2_idx, prot_score, osteo_tier, kcal_s, sweat_s
+        );
+        assert!(n2_idx > 1.5);
+        assert_eq!(osteo_tier, "LOW");
+    }
 }

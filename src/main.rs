@@ -1,1294 +1,1829 @@
-// AEGIS-BIO – Astronot Kol Tableti (YATAY arayüz)
-// Rust + eframe/egui 0.27
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke,
-    Ui, Vec2,
+    self, Align, Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Key, Layout, Margin,
+    Order, Pos2, Rect, RichText, Rounding, Sense, Shape, Stroke, Ui, Vec2,
 };
-use egui_plot::{Line, Plot, PlotPoints};
-use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
-const DATASET_PATH: &str = "data/aegis_dataset.txt";
+// ───────────────────────── Layer 1: Primitive Palette ─────────────────────────
+mod palette {
+    use eframe::egui::Color32;
 
-const DEFAULT_DATASET: &str = r#"# AEGIS-BIO veri seti  (anahtar=değer)
-# Düzenleyip  SEÇENEKLER > "Veri setini yeniden oku"  ile içeri alın.
-planet=MARS
-heading=40
-hub_dist=340
-hub_bearing=85
-hub_pressure=101.2
-temp_c=-63
-atm_pa=610
-dust=22
-wind_speed=7.5
-wind_dir=250
-radiation=12.5
-bpm=72
-spo2=98
-pressure_sys=120
-pressure_dia=78
-nitrogen=78
-hemoglobin=14.5
-sodium_mmol=139.0
-sodium_age_min=135
-sleep_hours=6.5
-sleep_quality=72
-hub_astronauts=Cdr. Emir;Dr. Aylin (Uçuş Hekimi);Müh. Kaan;Müh. Selin
-door.ana_kilit=closed
-door.yedek_kilit=closed
-door.rover_girisi=open
-door.sera_gecidi=closed
-monitor.astroskin=on
-monitor.kol_tableti=on
-monitor.giysi_basinc=on
-monitor.kabin_co2=on
-monitor.dozimetre=on
-monitor.uyku=off
-monitor.sodyum_yama=on
-monitor.hub_hava=on
-suit.sol_kol=tear
-"#;
+    // Ink-Dark Slate Ramp (Standard Cockpit)
+    pub const INK_950: Color32 = Color32::from_rgb(7, 9, 13);
+    pub const INK_900: Color32 = Color32::from_rgb(11, 14, 20);
+    pub const INK_850: Color32 = Color32::from_rgb(17, 22, 31);
+    pub const INK_800: Color32 = Color32::from_rgb(23, 30, 42);
+    pub const INK_750: Color32 = Color32::from_rgb(28, 36, 50);
+    pub const INK_700: Color32 = Color32::from_rgb(38, 48, 65);
+    pub const INK_600: Color32 = Color32::from_rgb(56, 70, 92);
 
-// ───────────────────────── Giriş ─────────────────────────
+    // High-Visor Solar Glare Ramp (AAA High Contrast)
+    pub const VISOR_950: Color32 = Color32::from_rgb(0, 0, 0);
+    pub const VISOR_900: Color32 = Color32::from_rgb(5, 7, 10);
+    pub const VISOR_850: Color32 = Color32::from_rgb(12, 16, 22);
+    pub const VISOR_800: Color32 = Color32::from_rgb(20, 26, 36);
+    pub const VISOR_700: Color32 = Color32::from_rgb(92, 112, 142);
+
+    // Warm Input Surface Tint
+    pub const WARM_850: Color32 = Color32::from_rgb(22, 19, 15);
+    pub const WARM_800: Color32 = Color32::from_rgb(31, 27, 20);
+    pub const WARM_BORDER: Color32 = Color32::from_rgb(84, 62, 26);
+
+    // Text Ramp
+    pub const SLATE_50: Color32 = Color32::from_rgb(244, 246, 250);
+    pub const SLATE_200: Color32 = Color32::from_rgb(203, 213, 225);
+    pub const SLATE_400: Color32 = Color32::from_rgb(138, 149, 168);
+
+    // Standard Aerospace Semantics
+    pub const SKY_400: Color32 = Color32::from_rgb(56, 189, 248);
+    pub const AMBER_400: Color32 = Color32::from_rgb(245, 158, 11);
+    pub const MINT_400: Color32 = Color32::from_rgb(76, 195, 138);
+    pub const CORAL_400: Color32 = Color32::from_rgb(239, 83, 80);
+
+    // Colorblind-Safe (Okabe-Ito Inspired High-Distinction)
+    pub const CB_TEAL: Color32 = Color32::from_rgb(0, 178, 148);
+    pub const CB_BLUE: Color32 = Color32::from_rgb(86, 180, 233);
+    pub const CB_ORANGE: Color32 = Color32::from_rgb(230, 159, 0);
+    pub const CB_MAGENTA: Color32 = Color32::from_rgb(244, 114, 182);
+
+    // Alert Surface
+    pub const CRIMSON_900: Color32 = Color32::from_rgb(32, 14, 18);
+    pub const CRIMSON_850: Color32 = Color32::from_rgb(44, 18, 23);
+    pub const CB_ALERT_BG: Color32 = Color32::from_rgb(36, 15, 29);
+    pub const CB_ALERT_HOVER: Color32 = Color32::from_rgb(48, 20, 38);
+}
+
+// ───────────────────────── Layer 2 & 3: Semantic & Component Tokens ─────────────────────────
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContrastMode {
+    Standard,
+    HighVisor,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AccessibilityConfig {
+    contrast: ContrastMode,
+    large_text: bool,
+    colorblind_safe: bool,
+    glove_targets: bool,
+    reduced_motion: bool,
+}
+
+impl Default for AccessibilityConfig {
+    fn default() -> Self {
+        Self {
+            contrast: ContrastMode::Standard,
+            large_text: false,
+            colorblind_safe: false,
+            glove_targets: false,
+            reduced_motion: false,
+        }
+    }
+}
+
+impl AccessibilityConfig {
+    fn summary(self) -> String {
+        let mut parts = Vec::new();
+        if self.contrast == ContrastMode::HighVisor {
+            parts.push("High-Visor");
+        }
+        if self.large_text {
+            parts.push("Large Type");
+        }
+        if self.colorblind_safe {
+            parts.push("CB-Safe");
+        }
+        if self.glove_targets {
+            parts.push("Glove+");
+        }
+        if self.reduced_motion {
+            parts.push("Static");
+        }
+        if parts.is_empty() {
+            "Standard".to_string()
+        } else {
+            parts.join(" · ")
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Tokens {
+    outer_bg: Color32,
+    screen_bg: Color32,
+    card_bg: Color32,
+    card_hover: Color32,
+    card_input_bg: Color32,
+    card_input_hover: Color32,
+    raised_bg: Color32,
+    raised_hover: Color32,
+    hairline: Color32,
+    hairline_strong: Color32,
+    hairline_input: Color32,
+    accent_view: Color32,
+    accent_input: Color32,
+    nominal: Color32,
+    caution: Color32,
+    critical: Color32,
+    alert_bg: Color32,
+    alert_hover: Color32,
+    text_main: Color32,
+    text_body: Color32,
+    text_muted: Color32,
+    font_scale: f32,
+    stroke_w: f32,
+    button_h: f32,
+    bezel_padding: f32,
+}
+
+impl Tokens {
+    fn resolve(cfg: AccessibilityConfig) -> Self {
+        let high = cfg.contrast == ContrastMode::HighVisor;
+        let cb = cfg.colorblind_safe;
+
+        Self {
+            outer_bg: if high { palette::VISOR_950 } else { palette::INK_950 },
+            screen_bg: if high { palette::VISOR_900 } else { palette::INK_900 },
+            card_bg: if high { palette::VISOR_850 } else { palette::INK_850 },
+            card_hover: if high { palette::VISOR_800 } else { palette::INK_800 },
+            card_input_bg: palette::WARM_850,
+            card_input_hover: palette::WARM_800,
+            raised_bg: if high { palette::VISOR_800 } else { palette::INK_750 },
+            raised_hover: if high { palette::INK_700 } else { palette::INK_700 },
+            hairline: if high { palette::VISOR_700 } else { palette::INK_700 },
+            hairline_strong: if high { palette::SLATE_200 } else { palette::INK_600 },
+            hairline_input: if high { palette::AMBER_400 } else { palette::WARM_BORDER },
+            accent_view: if cb { palette::CB_BLUE } else { palette::SKY_400 },
+            accent_input: if cb { palette::CB_ORANGE } else { palette::AMBER_400 },
+            nominal: if cb { palette::CB_TEAL } else { palette::MINT_400 },
+            caution: if cb { palette::CB_ORANGE } else { palette::AMBER_400 },
+            critical: if cb { palette::CB_MAGENTA } else { palette::CORAL_400 },
+            alert_bg: if cb { palette::CB_ALERT_BG } else { palette::CRIMSON_900 },
+            alert_hover: if cb { palette::CB_ALERT_HOVER } else { palette::CRIMSON_850 },
+            text_main: if high { Color32::WHITE } else { palette::SLATE_50 },
+            text_body: if high { palette::SLATE_50 } else { palette::SLATE_200 },
+            text_muted: if high { palette::SLATE_200 } else { palette::SLATE_400 },
+            font_scale: if cfg.large_text { 1.15 } else { 1.0 },
+            stroke_w: if high { 1.5_f32 } else { 1.0_f32 },
+            button_h: if cfg.glove_targets { 52.0 } else { 44.0 },
+            bezel_padding: if cfg.glove_targets { 16.0 } else { 12.0 },
+        }
+    }
+
+    fn sz(&self, base: f32) -> f32 {
+        (base * self.font_scale).round()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusLevel {
+    Nominal, // Circle
+    Caution, // Triangle
+    Critical, // Square
+}
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 700.0])
-            .with_min_inner_size([900.0, 560.0])
-            .with_title("AEGIS-BIO – Kol Tableti"),
+            .with_inner_size([896.0, 504.0])
+            .with_min_inner_size([640.0, 360.0])
+            .with_title("AEGIS-BIO // Wrist Biomon"),
         ..Default::default()
     };
+
     eframe::run_native(
-        "AEGIS-BIO Kol Tableti",
+        "AEGIS-BIO Wrist Biomon",
         options,
-        Box::new(|cc| Box::new(App::new(cc))),
+        Box::new(|cc| Box::new(BiomonApp::new(cc))),
     )
 }
 
-// ───────────────────────── Tipler ─────────────────────────
-#[derive(PartialEq, Clone, Copy)]
-enum Page {
-    Home,
+// ───────────────────────── Domain State & Protocols ─────────────────────────
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Main,
+    Input,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelId {
     Health,
-    Hazards,
     Hub,
-    Settings,
+    Tech,
+    Hazard,
 }
 
-const TABS: [(Page, &str); 5] = [
-    (Page::Home, "ANA EKRAN"),
-    (Page::Health, "SAĞLIK"),
-    (Page::Hazards, "TEHLİKELER"),
-    (Page::Hub, "HUB"),
-    (Page::Settings, "SEÇENEKLER"),
-];
-
-/// Kıyafet bölgesi durumu
-#[derive(Clone, Copy, PartialEq)]
-enum Suit {
-    Ok,
-    Tear,
-    Crit,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Launch,
+    Orbit,
+    Eva,
+    ReEntry,
 }
-impl Suit {
+
+impl Phase {
+    const ALL: [Phase; 4] = [Phase::Launch, Phase::Orbit, Phase::Eva, Phase::ReEntry];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Launch => "Launch",
+            Self::Orbit => "Orbit",
+            Self::Eva => "EVA",
+            Self::ReEntry => "Re-entry",
+        }
+    }
+
+    fn base_hr(self) -> i32 {
+        match self {
+            Self::Launch => 124,
+            Self::Orbit => 88,
+            Self::Eva => 138,
+            Self::ReEntry => 132,
+        }
+    }
+
+    fn hr_bounds(self) -> (i32, i32) {
+        match self {
+            Self::Launch => (100, 140),
+            Self::Orbit => (55, 95),
+            Self::Eva => (110, 155),
+            Self::ReEntry => (90, 135),
+        }
+    }
+
+    fn hr_range(self) -> &'static str {
+        match self {
+            Self::Launch => "100–140 bpm",
+            Self::Orbit => "55–95 bpm",
+            Self::Eva => "110–155 bpm",
+            Self::ReEntry => "90–135 bpm",
+        }
+    }
+
+    fn bp(self) -> &'static str {
+        match self {
+            Self::Launch => "132/84",
+            Self::Orbit => "118/76",
+            Self::Eva => "138/86",
+            Self::ReEntry => "102/64",
+        }
+    }
+
+    fn kcal_rate(self) -> f32 {
+        match self {
+            Self::Launch => 3.4,
+            Self::Orbit => 1.8,
+            Self::Eva => 6.8,
+            Self::ReEntry => 3.1,
+        }
+    }
+
+    fn rag_title(self) -> &'static str {
+        match self {
+            Self::Launch => "Ascent corridor (+3.8 Gx)",
+            Self::Orbit => "Microgravity eye-pressure protection",
+            Self::Eva => "EVA workload threshold active",
+            Self::ReEntry => "Re-entry fluid load active (T-118 min)",
+        }
+    }
+
+    fn rag_text(self) -> &'static str {
+        match self {
+            Self::Launch => "Heart rate (100–140 bpm) and breathing (20–30 brpm) are safe under launch G-load. Low-residue ration active.",
+            Self::Orbit => "Keep daily sodium under 2,500 mg to reduce bone loss and headward fluid shift (SANS eye pressure).",
+            Self::Eva => "138 bpm is safe in EVA corridor (110–155 bpm). Burn rate is 410 kcal/hr — sip from the In-Suit Drink Bag.",
+            Self::ReEntry => "Sodium limit lifted for landing prep. Drink 1,150 mL water with 9x 1g salt tablets before +4 Gz descent.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hazard {
+    Nominal,
+    Radiation,
+    HighCo2,
+    Hypoxia,
+}
+
+impl Hazard {
+    const ALL: [Hazard; 4] = [
+        Hazard::Nominal,
+        Hazard::Radiation,
+        Hazard::HighCo2,
+        Hazard::Hypoxia,
+    ];
+
     fn label(self) -> &'static str {
         match self {
-            Suit::Ok => "NORMAL",
-            Suit::Tear => "YIRTIK",
-            Suit::Crit => "KRİTİK",
+            Self::Nominal => "Nominal",
+            Self::Radiation => "Solar radiation spike",
+            Self::HighCo2 => "High suit CO2",
+            Self::Hypoxia => "Low tissue oxygen",
         }
     }
-    fn parse(s: &str) -> Option<Suit> {
-        match s {
-            "ok" | "normal" => Some(Suit::Ok),
-            "tear" | "yirtik" => Some(Suit::Tear),
-            "crit" | "kritik" => Some(Suit::Crit),
-            _ => None,
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Nominal => "All suit levels safe",
+            Self::Radiation => "High solar radiation",
+            Self::HighCo2 => "High CO2 (5.4 mmHg)",
+            Self::Hypoxia => "Low oxygen (89%)",
+        }
+    }
+
+    fn rad(self) -> &'static str {
+        match self {
+            Self::Radiation => "4.85 mSv/d",
+            _ => "0.42 mSv/d",
+        }
+    }
+
+    fn rad_val(self) -> &'static str {
+        match self {
+            Self::Radiation => "4.85",
+            _ => "0.42",
+        }
+    }
+
+    fn co2(self) -> &'static str {
+        match self {
+            Self::HighCo2 => "5.4 mmHg",
+            Self::Hypoxia => "3.4 mmHg",
+            _ => "2.8 mmHg",
+        }
+    }
+
+    fn co2_val(self) -> &'static str {
+        match self {
+            Self::HighCo2 => "5.4",
+            Self::Hypoxia => "3.4",
+            _ => "2.8",
+        }
+    }
+
+    fn o2(self) -> &'static str {
+        match self {
+            Self::HighCo2 => "96%",
+            Self::Hypoxia => "89%",
+            _ => "98%",
+        }
+    }
+
+    fn sans(self) -> &'static str {
+        match self {
+            Self::HighCo2 => "Elevated",
+            _ => "Low",
+        }
+    }
+
+    fn rag_title(self) -> &'static str {
+        match self {
+            Self::Nominal => "Suit environment nominal",
+            Self::Radiation => "Action: Return to radiation shelter",
+            Self::HighCo2 => "Action: Inspect CO2 scrubber",
+            Self::Hypoxia => "Action: Check oxygen valve",
+        }
+    }
+
+    fn rag_text(self) -> &'static str {
+        match self {
+            Self::Nominal => "Radiation, scrubber CO2 (<4.0 mmHg), and tissue oxygen (≥92%) are within safe NASA-STD-3001 limits.",
+            Self::Radiation => "Radiation exceeds 2.0 mSv/d safe limit. End surface EVA now and head 222 m NE to the storm shelter.",
+            Self::HighCo2 => "High CO2 raises brain blood flow and eye pressure. Check LiOH scrubber cartridge and cap sodium at <1,800 mg.",
+            Self::Hypoxia => "Tissue O2 dropped below 92%. Verify primary O2 regulator at 4.3 psi and switch to Backup O2 Pack if pressure falls.",
         }
     }
 }
 
-struct Part {
-    id: &'static str,
+struct RationPlan {
+    short: &'static str,
     name: &'static str,
-    circle: bool,
-    // 100 x 168 birimlik figür kutusunda konum
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+    reason: String,
 }
 
-const PARTS: [Part; 10] = [
-    Part { id: "kask", name: "Kask", circle: true, x: 34.0, y: 0.0, w: 32.0, h: 32.0 },
-    Part { id: "govde", name: "Gövde", circle: false, x: 32.0, y: 35.0, w: 36.0, h: 56.0 },
-    Part { id: "sol_kol", name: "Sol Kol", circle: false, x: 14.0, y: 37.0, w: 16.0, h: 46.0 },
-    Part { id: "sag_kol", name: "Sağ Kol", circle: false, x: 70.0, y: 37.0, w: 16.0, h: 46.0 },
-    Part { id: "sol_eldiven", name: "Sol Eldiven", circle: false, x: 13.0, y: 86.0, w: 18.0, h: 16.0 },
-    Part { id: "sag_eldiven", name: "Sağ Eldiven", circle: false, x: 69.0, y: 86.0, w: 18.0, h: 16.0 },
-    Part { id: "sol_bacak", name: "Sol Bacak", circle: false, x: 33.0, y: 94.0, w: 16.0, h: 56.0 },
-    Part { id: "sag_bacak", name: "Sağ Bacak", circle: false, x: 51.0, y: 94.0, w: 16.0, h: 56.0 },
-    Part { id: "sol_bot", name: "Sol Bot", circle: false, x: 31.0, y: 153.0, w: 19.0, h: 15.0 },
-    Part { id: "sag_bot", name: "Sağ Bot", circle: false, x: 50.0, y: 153.0, w: 19.0, h: 15.0 },
-];
-
-#[derive(Clone, Copy, PartialEq)]
-enum Door {
-    Closed,
-    Open,
-    Cycling,
-}
-struct DoorRow {
-    id: &'static str,
-    name: &'static str,
-    state: Door,
-}
-struct Monitor {
-    id: &'static str,
-    name: &'static str,
-    on: bool,
+struct BiomonState {
+    mode: Mode,
+    phase: Phase,
+    online: bool,
+    buffered_packets: u32,
+    meal_eaten_pct: u32,
+    water_ml: u32,
+    nacl_count: u32,
+    hazard: Hazard,
+    distance_m: u32,
+    calorie_deficit: u32,
+    sweat_deficit_ml: u32,
+    live_hr: i32,
+    active_panel: Option<PanelId>,
+    a11y: AccessibilityConfig,
+    pulse_phase: bool,
 }
 
-// ───────────────────────── Renk paleti ─────────────────────────
-#[derive(Clone, Copy)]
-struct Pal {
-    bg: Color32,
-    panel: Color32,
-    panel_hi: Color32,
-    edge: Color32,
-    text: Color32,
-    dim: Color32,
-    accent: Color32,
-    ok: Color32,
-    warn: Color32, // turuncu
-    danger: Color32, // kırmızı
-    bar_bg: Color32,
-    suit: Color32,
-}
-
-/// RGBA (unmultiplied) renge parlaklık çarpanı uygular.
-fn sc(c: [u8; 4], k: f32) -> Color32 {
-    let f = |v: u8| ((v as f32) * k).clamp(0.0, 255.0) as u8;
-    Color32::from_rgba_unmultiplied(f(c[0]), f(c[1]), f(c[2]), c[3])
-}
-
-fn suit_color(p: &Pal, s: Suit) -> Color32 {
-    match s {
-        Suit::Ok => p.ok,
-        Suit::Tear => p.warn,
-        Suit::Crit => p.danger,
+impl Default for BiomonState {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Main,
+            phase: Phase::Orbit,
+            online: true,
+            buffered_packets: 0,
+            meal_eaten_pct: 100,
+            water_ml: 0,
+            nacl_count: 0,
+            hazard: Hazard::Nominal,
+            distance_m: 222,
+            calorie_deficit: 120,
+            sweat_deficit_ml: 85,
+            live_hr: 88,
+            active_panel: None,
+            a11y: AccessibilityConfig::default(),
+            pulse_phase: false,
+        }
     }
 }
 
-// ───────────────────────── Uygulama durumu ─────────────────────────
-struct App {
-    page: Page,
-    t: f64,
+impl BiomonState {
+    fn compute_ration(&self) -> RationPlan {
+        if self.phase == Phase::ReEntry {
+            return RationPlan {
+                short: "1.15 L + 9x NaCl",
+                name: "Re-entry hydration load (1,150 mL water + 9x 1g salt)",
+                reason: "Restores blood plasma volume before gravity return to prevent fainting on landing.".into(),
+            };
+        }
+        if self.hazard == Hazard::HighCo2 {
+            return RationPlan {
+                short: "Low-Na+ salmon",
+                name: "Low-sodium salmon & quinoa pack (390 mg Na+)",
+                reason: format!(
+                    "High CO2 raises eye-pressure risk; holding back high-salt packs while covering {}% uneaten meal.",
+                    100 - self.meal_eaten_pct
+                ),
+            };
+        }
+        if self.meal_eaten_pct < 100 || self.phase == Phase::Eva {
+            return RationPlan {
+                short: "High-K+ fajita",
+                name: "High-potassium chicken fajita + electrolyte drink",
+                reason: format!(
+                    "Covers {}% uneaten meal ({} kcal and {} mL sweat loss) while staying under 2,500 mg daily sodium.",
+                    100 - self.meal_eaten_pct,
+                    self.calorie_deficit,
+                    self.sweat_deficit_ml
+                ),
+            };
+        }
+        RationPlan {
+            short: "Balanced ration #4",
+            name: "ISS balanced ration #4 (turkey & vegetables)",
+            reason: "Standard microgravity meal; maintains daily sodium below 2,500 mg.".into(),
+        }
+    }
 
-    // Seçenekler
-    brightness: f32,
-    c_bg: [u8; 4],
-    c_panel: [u8; 4],
-    c_accent: [u8; 4],
-    c_ok: [u8; 4],
-    c_warn: [u8; 4],
-    c_danger: [u8; 4],
-    fahrenheit: bool,
-    show_suit: bool,
-    blink: bool,
-    ui_scale: f32,
-    sync_msg: String,
+    fn set_meal(&mut self, pct: u32) {
+        self.meal_eaten_pct = pct;
+        let eva_base = if self.phase == Phase::Eva { 410 } else { 120 };
+        self.calorie_deficit = ((100 - pct) as f32 * 6.5).round() as u32 + eva_base;
+    }
 
-    // Sağlık
-    bpm: f32,
-    bpm_base: f32,
-    spo2: f32,
-    sys: f32,
-    dia: f32,
-    nitrogen: f32,
-    hemoglobin: f32,
-    sodium: f32,
-    sodium_age_min: f32,
-    sleep_hours: f32,
-    sleep_quality: f32,
-
-    // Tehlikeler
-    radiation: f32,
-    planet: String,
-    temp_c: f32,
-    atm_pa: f32,
-    dust: f32,
-    wind_speed: f32,
-    wind_dir: f32,
-    heading: f32,
-
-    // Hub
-    hub_dist: f32,
-    hub_bearing: f32,
-    hub_pressure: f32,
-    doors: Vec<DoorRow>,
-    hub_astronauts: Vec<String>,
-    monitors: Vec<Monitor>,
-
-    // Kıyafet
-    suit: [Suit; 10],
-    sel: usize,
-
-    // Grafik
-    hr_hist: VecDeque<[f64; 2]>,
-    last_sample: f64,
-
-    // Terminal
-    logs: Vec<String>,
-    input: String,
+    fn set_phase(&mut self, phase: Phase) {
+        self.phase = phase;
+        self.live_hr = phase.base_hr();
+        if phase == Phase::Eva {
+            self.calorie_deficit = 410;
+            self.sweat_deficit_ml = 850;
+        }
+    }
 }
 
-impl App {
+// ───────────────────────── Application Shell ─────────────────────────
+struct BiomonApp {
+    state: BiomonState,
+    last_tick: Instant,
+    prng: u64,
+}
+
+impl BiomonApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.style_mut(|s| {
-            s.spacing.interact_size.y = 40.0;
-            s.spacing.item_spacing = Vec2::new(10.0, 8.0);
-            s.spacing.button_padding = Vec2::new(14.0, 8.0);
+            s.spacing.item_spacing = Vec2::new(8.0, 8.0);
+            s.spacing.button_padding = Vec2::new(12.0, 8.0);
         });
-        let mut app = Self {
-            page: Page::Home,
-            t: 0.0,
-            brightness: 1.0,
-            c_bg: [10, 16, 28, 255],
-            c_panel: [22, 32, 50, 240],
-            c_accent: [70, 190, 255, 255],
-            c_ok: [72, 212, 142, 255],
-            c_warn: [255, 140, 30, 255],
-            c_danger: [255, 62, 62, 255],
-            fahrenheit: false,
-            show_suit: true,
-            blink: true,
-            ui_scale: 1.0,
-            sync_msg: "Henüz senkronize edilmedi.".into(),
-            bpm: 72.0,
-            bpm_base: 72.0,
-            spo2: 98.0,
-            sys: 120.0,
-            dia: 78.0,
-            nitrogen: 78.0,
-            hemoglobin: 14.5,
-            sodium: 139.0,
-            sodium_age_min: 135.0,
-            sleep_hours: 6.5,
-            sleep_quality: 72.0,
-            radiation: 12.5,
-            planet: "MARS".into(),
-            temp_c: -63.0,
-            atm_pa: 610.0,
-            dust: 22.0,
-            wind_speed: 7.5,
-            wind_dir: 250.0,
-            heading: 40.0,
-            hub_dist: 340.0,
-            hub_bearing: 85.0,
-            hub_pressure: 101.2,
-            doors: vec![
-                DoorRow { id: "ana_kilit", name: "Ana Hava Kilidi", state: Door::Closed },
-                DoorRow { id: "yedek_kilit", name: "Yedek Hava Kilidi", state: Door::Closed },
-                DoorRow { id: "rover_girisi", name: "Rover Giriş Kapısı", state: Door::Open },
-                DoorRow { id: "sera_gecidi", name: "Sera Geçidi", state: Door::Closed },
-            ],
-            hub_astronauts: vec![],
-            monitors: vec![
-                Monitor { id: "astroskin", name: "Astroskin Göğüs Sensörü", on: true },
-                Monitor { id: "kol_tableti", name: "Kol Tableti", on: true },
-                Monitor { id: "giysi_basinc", name: "Kıyafet Basınç Ağı", on: true },
-                Monitor { id: "kabin_co2", name: "Kabin CO2 Monitörü", on: true },
-                Monitor { id: "dozimetre", name: "Radyasyon Dozimetresi", on: true },
-                Monitor { id: "uyku", name: "Uyku İzleyici", on: false },
-                Monitor { id: "sodyum_yama", name: "Sodyum / Ter Yaması", on: true },
-                Monitor { id: "hub_hava", name: "Hub Hava Monitörü", on: true },
-            ],
-            suit: [Suit::Ok; 10],
-            sel: 2,
-            hr_hist: VecDeque::new(),
-            last_sample: 0.0,
-            logs: vec![
-                "[SİSTEM] AegisOS kol tableti hazır. Komutlar için 'help'.".into(),
-            ],
-            input: String::new(),
+        let app = Self {
+            state: BiomonState::default(),
+            last_tick: Instant::now(),
+            prng: 0xAE61_5B10_2026_1114,
         };
-        app.sync_dataset();
+        app.apply_visuals(&cc.egui_ctx, Tokens::resolve(app.state.a11y));
         app
     }
 
-    fn pal(&self) -> Pal {
-        let k = self.brightness;
-        Pal {
-            bg: sc(self.c_bg, k),
-            panel: sc(self.c_panel, k),
-            panel_hi: sc(
-                [
-                    self.c_panel[0].saturating_add(14),
-                    self.c_panel[1].saturating_add(18),
-                    self.c_panel[2].saturating_add(26),
-                    self.c_panel[3],
-                ],
-                k,
-            ),
-            edge: sc([64, 88, 124, 255], k),
-            text: sc([228, 236, 248, 255], k),
-            dim: sc([142, 162, 188, 255], k),
-            accent: sc(self.c_accent, k),
-            ok: sc(self.c_ok, k),
-            warn: sc(self.c_warn, k),
-            danger: sc(self.c_danger, k),
-            bar_bg: sc([12, 18, 30, 255], k),
-            suit: sc([176, 194, 216, 255], k),
-        }
-    }
-
-    fn apply_visuals(&self, ctx: &egui::Context, p: &Pal) {
+    fn apply_visuals(&self, ctx: &egui::Context, t: Tokens) {
         let mut v = egui::Visuals::dark();
-        v.panel_fill = p.bg;
-        v.window_fill = p.panel;
-        v.extreme_bg_color = p.bar_bg;
-        v.override_text_color = Some(p.text);
-        v.selection.bg_fill = p.accent;
-        v.selection.stroke = Stroke::new(1.0, p.text);
-        v.widgets.inactive.bg_fill = p.edge;
-        v.widgets.inactive.weak_bg_fill = p.panel_hi;
-        v.widgets.hovered.weak_bg_fill = p.edge;
-        v.widgets.active.weak_bg_fill = p.accent;
+        v.panel_fill = t.outer_bg;
+        v.window_fill = t.screen_bg;
+        v.override_text_color = Some(t.text_main);
+        v.widgets.noninteractive.rounding = Rounding::same(8.0);
+        v.widgets.inactive.rounding = Rounding::same(8.0);
+        v.widgets.hovered.rounding = Rounding::same(8.0);
+        v.widgets.active.rounding = Rounding::same(8.0);
         ctx.set_visuals(v);
     }
 
-    fn log(&mut self, s: impl Into<String>) {
-        self.logs.push(s.into());
-        if self.logs.len() > 200 {
-            self.logs.remove(0);
-        }
+    fn next_rand(&mut self) -> u64 {
+        self.prng = self
+            .prng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.prng >> 32
     }
 
-    fn temp_str(&self, c: f32) -> String {
-        if self.fahrenheit {
-            format!("{:.0} °F", c * 9.0 / 5.0 + 32.0)
-        } else {
-            format!("{c:.0} °C")
-        }
-    }
-
-    // ── Kıyafet özeti ──
-    fn suit_summary(&self, p: &Pal) -> (String, Color32) {
-        let names = |s: Suit| -> Vec<&str> {
-            PARTS.iter().enumerate().filter(|(i, _)| self.suit[*i] == s).map(|(_, pt)| pt.name).collect()
-        };
-        let crit = names(Suit::Crit);
-        let tear = names(Suit::Tear);
-        if !crit.is_empty() {
-            (format!("KRİTİK: {}", crit.join(", ")), p.danger)
-        } else if !tear.is_empty() {
-            (format!("YIRTIK: {}", tear.join(", ")), p.warn)
-        } else {
-            ("KIYAFET BÜTÜNLÜĞÜ NORMAL".into(), p.ok)
-        }
-    }
-
-    // ── Veri seti okuma ──
-    fn apply_kv(&mut self, k: &str, v: &str) -> bool {
-        fn set(dst: &mut f32, v: Option<f32>) -> bool {
-            if let Some(x) = v {
-                *dst = x;
-                true
-            } else {
-                false
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            if i.key_pressed(Key::C) {
+                self.state.mode = match self.state.mode {
+                    Mode::Main => Mode::Input,
+                    Mode::Input => Mode::Main,
+                };
             }
-        }
-        if let Some(id) = k.strip_prefix("door.") {
-            let st = match v {
-                "open" => Door::Open,
-                "closed" => Door::Closed,
-                "cycling" => Door::Cycling,
-                _ => return false,
-            };
-            return self.doors.iter_mut().find(|d| d.id == id).map(|d| d.state = st).is_some();
-        }
-        if let Some(id) = k.strip_prefix("monitor.") {
-            let on = match v {
-                "on" => true,
-                "off" => false,
-                _ => return false,
-            };
-            return self.monitors.iter_mut().find(|m| m.id == id).map(|m| m.on = on).is_some();
-        }
-        if let Some(id) = k.strip_prefix("suit.") {
-            let st = match Suit::parse(v) {
-                Some(s) => s,
-                None => return false,
-            };
-            return match PARTS.iter().position(|p| p.id == id) {
-                Some(i) => {
-                    self.suit[i] = st;
-                    true
-                }
-                None => false,
-            };
-        }
-        let f = v.parse::<f32>().ok();
-        match k {
-            "planet" => {
-                self.planet = v.to_uppercase();
-                true
+            if i.key_pressed(Key::Escape) {
+                self.state.active_panel = None;
             }
-            "hub_astronauts" => {
-                self.hub_astronauts = v.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                true
+            if i.key_pressed(Key::H) {
+                self.state.a11y.contrast = match self.state.a11y.contrast {
+                    ContrastMode::Standard => ContrastMode::HighVisor,
+                    ContrastMode::HighVisor => ContrastMode::Standard,
+                };
             }
-            "bpm" => {
-                let ok = set(&mut self.bpm_base, f);
-                if ok {
-                    self.bpm = self.bpm_base;
-                }
-                ok
-            }
-            "spo2" => set(&mut self.spo2, f),
-            "pressure_sys" => set(&mut self.sys, f),
-            "pressure_dia" => set(&mut self.dia, f),
-            "nitrogen" => set(&mut self.nitrogen, f),
-            "hemoglobin" => set(&mut self.hemoglobin, f),
-            "sodium_mmol" => set(&mut self.sodium, f),
-            "sodium_age_min" => set(&mut self.sodium_age_min, f),
-            "sleep_hours" => set(&mut self.sleep_hours, f),
-            "sleep_quality" => set(&mut self.sleep_quality, f),
-            "radiation" => set(&mut self.radiation, f),
-            "temp_c" => set(&mut self.temp_c, f),
-            "atm_pa" => set(&mut self.atm_pa, f),
-            "dust" => set(&mut self.dust, f),
-            "wind_speed" => set(&mut self.wind_speed, f),
-            "wind_dir" => set(&mut self.wind_dir, f),
-            "heading" => set(&mut self.heading, f),
-            "hub_dist" => set(&mut self.hub_dist, f),
-            "hub_bearing" => set(&mut self.hub_bearing, f),
-            "hub_pressure" => set(&mut self.hub_pressure, f),
-            _ => false,
-        }
-    }
-
-    fn sync_dataset(&mut self) {
-        let path = std::path::Path::new(DATASET_PATH);
-        if !path.exists() {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            match std::fs::write(path, DEFAULT_DATASET) {
-                Ok(_) => self.log(format!("[SYNC] {DATASET_PATH} yoktu, örnek veri seti oluşturuldu.")),
-                Err(e) => {
-                    self.sync_msg = format!("Dosya oluşturulamadı: {e}");
-                    self.log(format!("[HATA] {}", self.sync_msg));
-                    return;
+            if self.state.active_panel.is_none() {
+                if i.key_pressed(Key::Num1) {
+                    self.state.active_panel = Some(PanelId::Health);
+                } else if i.key_pressed(Key::Num2) {
+                    self.state.active_panel = Some(PanelId::Hub);
+                } else if i.key_pressed(Key::Num3) {
+                    self.state.active_panel = Some(PanelId::Tech);
+                } else if i.key_pressed(Key::Num4) {
+                    self.state.active_panel = Some(PanelId::Hazard);
                 }
             }
-        }
-        match std::fs::read_to_string(path) {
-            Ok(txt) => {
-                let (mut ok, mut bad) = (0, 0);
-                for line in txt.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    match line.split_once('=') {
-                        Some((k, v)) if self.apply_kv(k.trim(), v.trim()) => ok += 1,
-                        _ => bad += 1,
-                    }
-                }
-                self.sync_msg = format!("{ok} değer okundu, {bad} satır atlandı.");
-                self.log(format!("[SYNC] {}", self.sync_msg));
-            }
-            Err(e) => {
-                self.sync_msg = format!("Okunamadı: {e}");
-                self.log(format!("[HATA] {}", self.sync_msg));
-            }
-        }
+        });
     }
 
-    // ── Terminal komutları ──
-    fn run(&mut self, cmd: String) {
-        let cmd = cmd.trim().to_lowercase();
-        if cmd.is_empty() {
+    fn tick_1hz(&mut self) {
+        if self.last_tick.elapsed() < Duration::from_secs(1) {
             return;
         }
-        self.log(format!("> {cmd}"));
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        let num = parts.get(1).and_then(|s| s.parse::<f32>().ok());
-        match parts[0] {
-            "help" => {
-                for l in [
-                    "home | health | hazards | hub | settings   sekme aç",
-                    "status                anlık değerler",
-                    "sync                  veri setini yeniden oku",
-                    "suit                  kıyafet bölgelerini listele (Sağlık sekmesinde görünür)",
-                    "suit <bolge> <ok|tear|crit>   örn: suit sol_kol tear",
-                    "bpm <n> | o2 <n> | rad <n>    değer ayarla",
-                    "clear                 terminali temizle",
-                ] {
-                    self.log(l);
-                }
-            }
-            "status" => {
-                let s = format!(
-                    "BPM {:.0} | SpO2 %{:.0} | RAD %{:.1} | BP {:.0}/{:.0} | Na {:.1} | Hub {:.0} m",
-                    self.bpm, self.spo2, self.radiation, self.sys, self.dia, self.sodium, self.hub_dist
-                );
-                self.log(s);
-            }
-            "home" => self.page = Page::Home,
-            "health" => self.page = Page::Health,
-            "hazards" => self.page = Page::Hazards,
-            "hub" => self.page = Page::Hub,
-            "settings" => self.page = Page::Settings,
-            "sync" => self.sync_dataset(),
-            "suit" => {
-                if parts.len() >= 3 {
-                    match (PARTS.iter().position(|p| p.id == parts[1]), Suit::parse(parts[2])) {
-                        (Some(i), Some(st)) => {
-                            self.suit[i] = st;
-                            self.sel = i;
-                            self.show_suit = true;
-                            self.log(format!("[OK] {} → {}", PARTS[i].name, st.label()));
-                        }
-                        _ => self.log("[HATA] kullanım: suit sol_kol tear"),
-                    }
+        self.last_tick = Instant::now();
+        self.state.pulse_phase = !self.state.pulse_phase;
+
+        let base = self.state.phase.base_hr()
+            + if self.state.hazard == Hazard::Hypoxia { 14 } else { 0 };
+        let jitter = (self.next_rand() % 3) as i32 - 1;
+        self.state.live_hr = base + jitter;
+
+        if self.state.phase == Phase::Eva && (self.next_rand() % 2 == 1) {
+            self.state.distance_m += 1;
+        }
+
+        if !self.state.online {
+            self.state.buffered_packets += 1;
+        }
+    }
+}
+
+impl eframe::App for BiomonApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_shortcuts(ctx);
+        self.tick_1hz();
+        let t = Tokens::resolve(self.state.a11y);
+        self.apply_visuals(ctx, t);
+        ctx.request_repaint_after(Duration::from_millis(250));
+
+        egui::CentralPanel::default()
+            .frame(Frame::none().fill(t.outer_bg).inner_margin(Margin::same(0.0)))
+            .show(ctx, |ui| {
+                let avail = ui.available_rect_before_wrap();
+                let margined = avail.shrink2(Vec2::new(avail.width() * 0.02, avail.height() * 0.02));
+                let screen_rect = fit_16_by_9(margined);
+
+                // Hardware display bezel
+                let painter = ui.painter();
+                painter.rect_filled(screen_rect, 16.0, t.screen_bg);
+                painter.rect_stroke(screen_rect, 16.0, Stroke::new(t.stroke_w, t.hairline_strong));
+
+                if let Some(panel) = self.state.active_panel {
+                    self.render_detail_overlay(ui, screen_rect, panel, t);
                 } else {
-                    for (i, pt) in PARTS.iter().enumerate() {
-                        let l = format!("{:<12} {}", pt.id, self.suit[i].label());
-                        self.log(l);
+                    self.render_quadrant_grid(ui, ctx, screen_rect, t);
+                }
+            });
+    }
+}
+
+impl BiomonApp {
+    fn render_quadrant_grid(&mut self, ui: &mut Ui, ctx: &egui::Context, screen_rect: Rect, t: Tokens) {
+        let center = screen_rect.center();
+        let inner_r = (screen_rect.height() * 0.18).min(80.0);
+        let ring_r = inner_r + 8.0;
+
+        let pointer_in_cycle = ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|pos| pos.distance(center) <= ring_r);
+
+        let gap = 12.0_f32;
+        let grid_rect = screen_rect.shrink(gap);
+        let qw = (grid_rect.width() - gap) / 2.0;
+        let qh = (grid_rect.height() - gap) / 2.0;
+        let clear_x = (qw * 0.16).max(52.0);
+        let clear_y = (qh * 0.12).max(20.0);
+
+        let rects = [
+            (
+                PanelId::Health,
+                Rect::from_min_size(grid_rect.min, Vec2::new(qw, qh)),
+                Margin {
+                    left: t.bezel_padding + 2.0,
+                    right: clear_x,
+                    top: 12.0,
+                    bottom: clear_y,
+                },
+            ),
+            (
+                PanelId::Hub,
+                Rect::from_min_size(
+                    Pos2::new(grid_rect.min.x + qw + gap, grid_rect.min.y),
+                    Vec2::new(qw, qh),
+                ),
+                Margin {
+                    left: clear_x,
+                    right: t.bezel_padding + 2.0,
+                    top: 12.0,
+                    bottom: clear_y,
+                },
+            ),
+            (
+                PanelId::Tech,
+                Rect::from_min_size(
+                    Pos2::new(grid_rect.min.x, grid_rect.min.y + qh + gap),
+                    Vec2::new(qw, qh),
+                ),
+                Margin {
+                    left: t.bezel_padding + 2.0,
+                    right: clear_x,
+                    top: clear_y,
+                    bottom: 12.0,
+                },
+            ),
+            (
+                PanelId::Hazard,
+                Rect::from_min_size(
+                    Pos2::new(grid_rect.min.x + qw + gap, grid_rect.min.y + qh + gap),
+                    Vec2::new(qw, qh),
+                ),
+                Margin {
+                    left: clear_x,
+                    right: t.bezel_padding + 2.0,
+                    top: clear_y,
+                    bottom: 12.0,
+                },
+            ),
+        ];
+
+        for (panel_id, q_rect, pad) in rects {
+            let is_alert = match panel_id {
+                PanelId::Health => self.state.hazard == Hazard::Hypoxia,
+                PanelId::Hazard => self.state.hazard != Hazard::Nominal,
+                _ => false,
+            };
+
+            let resp = ui.interact(q_rect, ui.id().with(panel_id as u8), Sense::click());
+            let hovered = resp.hovered() && !pointer_in_cycle;
+            if hovered {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+
+            let is_input = self.state.mode == Mode::Input;
+            let bg = if is_alert {
+                if hovered { t.alert_hover } else { t.alert_bg }
+            } else if is_input {
+                if hovered { t.card_input_hover } else { t.card_input_bg }
+            } else if hovered {
+                t.card_hover
+            } else {
+                t.card_bg
+            };
+
+            let border_stroke = if is_alert {
+                Stroke::new(t.stroke_w.max(1.5_f32), t.critical)
+            } else if is_input {
+                Stroke::new(
+                    t.stroke_w,
+                    if hovered { t.accent_input } else { t.hairline_input },
+                )
+            } else {
+                Stroke::new(
+                    t.stroke_w,
+                    if hovered { t.hairline_strong } else { t.hairline },
+                )
+            };
+
+            let painter = ui.painter();
+            painter.rect_filled(q_rect, 12.0, bg);
+            painter.rect_stroke(q_rect, 12.0, border_stroke);
+
+            let content_rect = Rect::from_min_max(
+                Pos2::new(q_rect.min.x + pad.left, q_rect.min.y + pad.top),
+                Pos2::new(q_rect.max.x - pad.right, q_rect.max.y - pad.bottom),
+            );
+            ui.allocate_ui_at_rect(content_rect, |ui| {
+                self.render_quadrant_content(ui, panel_id, t);
+            });
+
+            if resp.clicked() && !pointer_in_cycle {
+                self.state.active_panel = Some(panel_id);
+            }
+        }
+
+        // Dead-Center Circular Cycle Dial (fixed layout center)
+        egui::Area::new(egui::Id::new("cycle_button"))
+            .order(Order::Foreground)
+            .fixed_pos(center - Vec2::splat(ring_r))
+            .show(ctx, |ui| {
+                let (ring_rect, _) = ui.allocate_exact_size(Vec2::splat(ring_r * 2.0), Sense::hover());
+                let inner_rect = Rect::from_center_size(ring_rect.center(), Vec2::splat(inner_r * 2.0));
+                let resp = ui.interact(inner_rect, ui.id().with("cycle_inner"), Sense::click());
+                if resp.hovered() {
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+
+                let painter = ui.painter();
+                let c = ring_rect.center();
+
+                // Outer cutout bezel + subtle instrument cardinal ticks
+                painter.circle(c, ring_r, t.screen_bg, Stroke::new(t.stroke_w, t.hairline));
+                for k in 0..4 {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_2;
+                    let d = Vec2::new(a.cos(), a.sin());
+                    painter.line_segment(
+                        [c + d * (ring_r - 4.0), c + d * (ring_r - 1.0)],
+                        Stroke::new(1.0_f32, t.hairline_strong),
+                    );
+                }
+
+                let (base_fill, hover_fill, ring_col, mode_lbl) = match self.state.mode {
+                    Mode::Main => (t.card_bg, t.raised_bg, t.accent_view, "View mode"),
+                    Mode::Input => (t.card_input_bg, t.card_input_hover, t.accent_input, "Edit mode"),
+                };
+                let fill_col = if resp.hovered() { hover_fill } else { base_fill };
+                let stroke_w = if resp.hovered() {
+                    t.stroke_w + 1.0_f32
+                } else {
+                    t.stroke_w + 0.5_f32
+                };
+
+                painter.circle(c, inner_r, fill_col, Stroke::new(stroke_w, ring_col));
+
+                let icon_col = if self.state.mode == Mode::Input {
+                    t.accent_input
+                } else {
+                    t.text_main
+                };
+                draw_refresh_icon(painter, Pos2::new(c.x, c.y - inner_r * 0.44), inner_r * 0.14, icon_col);
+
+                painter.text(
+                    Pos2::new(c.x, c.y - inner_r * 0.10),
+                    Align2::CENTER_CENTER,
+                    "Cycle",
+                    FontId::proportional((inner_r * 0.19).clamp(12.0, 15.0) * t.font_scale),
+                    t.text_main,
+                );
+                painter.text(
+                    Pos2::new(c.x, c.y + inner_r * 0.15),
+                    Align2::CENTER_CENTER,
+                    mode_lbl,
+                    FontId::proportional((inner_r * 0.13).clamp(10.0, 12.0) * t.font_scale),
+                    ring_col,
+                );
+
+                // Phase + shortcut hint
+                painter.text(
+                    Pos2::new(c.x, c.y + inner_r * 0.46),
+                    Align2::CENTER_CENTER,
+                    self.state.phase.name(),
+                    FontId::monospace((inner_r * 0.13).clamp(9.5, 11.5) * t.font_scale),
+                    t.text_muted,
+                );
+
+                if resp.clicked() {
+                    self.state.mode = match self.state.mode {
+                        Mode::Main => Mode::Input,
+                        Mode::Input => Mode::Main,
+                    };
+                }
+            });
+    }
+
+    fn render_quadrant_content(&self, ui: &mut Ui, panel: PanelId, t: Tokens) {
+        let is_input = self.state.mode == Mode::Input;
+        let ration = self.state.compute_ration();
+
+        let (num, title, footer_l, footer_r) = match panel {
+            PanelId::Health => (
+                "01",
+                "Health & suit",
+                format!("Deficit {} kcal · {} mL", self.state.calorie_deficit, self.state.sweat_deficit_ml),
+                format!("BP {}", self.state.phase.bp()),
+            ),
+            PanelId::Hub => (
+                "02",
+                "Hub & navigation",
+                "Bearing 042° NE".into(),
+                "Lag 18m 42s".into(),
+            ),
+            PanelId::Tech => (
+                "03",
+                "Comms & display",
+                format!("Queue {} pkts", self.state.buffered_packets),
+                format!("A11y: {}", self.state.a11y.summary()),
+            ),
+            PanelId::Hazard => (
+                "04",
+                "Hazard & env",
+                format!("SANS {}", self.state.hazard.sans()),
+                "Press [H] Hi-Vis".into(),
+            ),
+        };
+
+        // Zone 1: Header Strip
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(num)
+                    .family(FontFamily::Monospace)
+                    .size(t.sz(11.0))
+                    .color(t.text_muted),
+            );
+            ui.label(RichText::new(title).size(t.sz(13.0)).color(t.text_body));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (tag_txt, tag_col) = if is_input {
+                    ("Edit", t.accent_input)
+                } else {
+                    ("Live", t.text_muted)
+                };
+                ui.label(RichText::new(tag_txt).size(t.sz(11.0)).color(tag_col));
+            });
+        });
+
+        ui.add_space(4.0);
+        ui.painter().line_segment(
+            [
+                Pos2::new(ui.min_rect().left(), ui.cursor().top()),
+                Pos2::new(ui.max_rect().right(), ui.cursor().top()),
+            ],
+            Stroke::new(1.0_f32, t.hairline),
+        );
+
+        // Zone 2: Hero Telemetry / Control Body
+        let body_h = (ui.available_height() - 24.0).max(40.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), body_h),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    match panel {
+                        PanelId::Health => {
+                            if !is_input {
+                                let (lvl, suit_col, suit_txt, suit_sub) = if self.state.hazard == Hazard::Hypoxia {
+                                    (StatusLevel::Critical, t.critical, "Hypoxia alert", "Check O2 valve")
+                                } else if self.state.phase == Phase::ReEntry {
+                                    (StatusLevel::Caution, t.caution, "Fluid loading", "Drink + salt active")
+                                } else {
+                                    (StatusLevel::Nominal, t.nominal, "Suit safe", "Vitals in range")
+                                };
+
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            let beat_color = if !self.state.a11y.reduced_motion && self.state.pulse_phase {
+                                                suit_col.gamma_multiply(0.8)
+                                            } else {
+                                                suit_col
+                                            };
+                                            draw_heart_icon(ui, 16.0, beat_color);
+                                            ui.label(
+                                                RichText::new(format!("{}", self.state.live_hr))
+                                                    .family(FontFamily::Monospace)
+                                                    .size(t.sz(25.0))
+                                                    .color(t.text_main),
+                                            );
+                                            ui.label(
+                                                RichText::new("bpm")
+                                                    .family(FontFamily::Monospace)
+                                                    .size(t.sz(11.0))
+                                                    .color(t.text_muted),
+                                            );
+                                        });
+                                        // Safe corridor bar — immediate visual glance of where BPM sits
+                                        let (lo, hi) = self.state.phase.hr_bounds();
+                                        draw_corridor_bar(
+                                            ui,
+                                            116.0,
+                                            self.state.live_hr as f32,
+                                            lo as f32,
+                                            hi as f32,
+                                            suit_col,
+                                            t,
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("Safe {}", self.state.phase.hr_range()))
+                                                .family(FontFamily::Monospace)
+                                                .size(t.sz(10.5))
+                                                .color(t.text_muted),
+                                        );
+                                    });
+
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        status_chip(ui, lvl, suit_txt, suit_col, t);
+                                        ui.add_space(2.0);
+                                        ui.label(RichText::new(suit_sub).size(t.sz(11.5)).color(t.text_body));
+                                    });
+                                });
+                            } else {
+                                ui.label(RichText::new("Log meal & landing fluids").size(t.sz(14.0)).color(t.accent_input));
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(format!("Last meal: {}% eaten", self.state.meal_eaten_pct))
+                                        .size(t.sz(12.5))
+                                        .color(t.text_main),
+                                );
+                                ui.label(
+                                    RichText::new("Open to record food % or 1,150 mL + salt tablets.")
+                                        .size(t.sz(11.5))
+                                        .color(t.text_muted),
+                                );
+                            }
+                        }
+                        PanelId::Hub => {
+                            if !is_input {
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("{}", self.state.distance_m))
+                                                    .family(FontFamily::Monospace)
+                                                    .size(t.sz(25.0))
+                                                    .color(t.text_main),
+                                            );
+                                            ui.label(
+                                                RichText::new("m to hub")
+                                                    .family(FontFamily::Monospace)
+                                                    .size(t.sz(11.0))
+                                                    .color(t.text_muted),
+                                            );
+                                        });
+                                        ui.label(
+                                            RichText::new(format!("Phase: {}", self.state.phase.name()))
+                                                .size(t.sz(12.5))
+                                                .color(t.text_body),
+                                        );
+                                        ui.label(
+                                            RichText::new(ration.short)
+                                                .size(t.sz(11.5))
+                                                .color(t.accent_view),
+                                        );
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        draw_compass_dial(ui, 44.0, 42.0_f32.to_radians(), t.accent_view, t);
+                                    });
+                                });
+                            } else {
+                                ui.label(RichText::new("Mission phase & hub sync").size(t.sz(14.0)).color(t.accent_input));
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(format!("Current phase: {}", self.state.phase.name()))
+                                        .size(t.sz(12.5))
+                                        .color(t.text_main),
+                                );
+                                ui.label(
+                                    RichText::new("Open to switch phase, flush buffer, or set range.")
+                                        .size(t.sz(11.5))
+                                        .color(t.text_muted),
+                                );
+                            }
+                        }
+                        PanelId::Tech => {
+                            if !is_input {
+                                if self.state.hazard != Hazard::Nominal {
+                                    status_chip(ui, StatusLevel::Critical, "1 action alert", t.critical, t);
+                                } else {
+                                    status_chip(ui, StatusLevel::Nominal, "No pending alerts", t.nominal, t);
+                                }
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("Local safety guide: NASA-STD-3001 ready")
+                                        .size(t.sz(11.5))
+                                        .color(t.text_body),
+                                );
+                                ui.add_space(2.0);
+                                if self.state.online {
+                                    status_chip(ui, StatusLevel::Nominal, "Hub link online", t.nominal, t);
+                                } else {
+                                    status_chip(ui, StatusLevel::Caution, "Offline · saving locally", t.caution, t);
+                                }
+                            } else {
+                                ui.label(RichText::new("Comms, buffer & accessibility").size(t.sz(14.0)).color(t.accent_input));
+                                ui.add_space(4.0);
+                                let link_txt = if self.state.online {
+                                    "Link: Online (surface LAN)".to_string()
+                                } else {
+                                    format!("Link: Offline ({} queued)", self.state.buffered_packets)
+                                };
+                                ui.label(RichText::new(link_txt).size(t.sz(12.0)).color(t.text_main));
+                                ui.label(
+                                    RichText::new("Open for LAN blackout test & astronaut display settings.")
+                                        .size(t.sz(11.5))
+                                        .color(t.text_muted),
+                                );
+                            }
+                        }
+                        PanelId::Hazard => {
+                            if !is_input {
+                                let (lvl, title_col) = match self.state.hazard {
+                                    Hazard::Nominal => (StatusLevel::Nominal, t.nominal),
+                                    Hazard::HighCo2 => (StatusLevel::Caution, t.caution),
+                                    Hazard::Radiation | Hazard::Hypoxia => (StatusLevel::Critical, t.critical),
+                                };
+                                status_chip(ui, lvl, self.state.hazard.title(), title_col, t);
+                                ui.add_space(6.0);
+                                // 3-channel mini telemetry strip with clear limits
+                                ui.horizontal(|ui| {
+                                    mini_metric(
+                                        ui,
+                                        "Rad",
+                                        self.state.hazard.rad_val(),
+                                        "mSv/d",
+                                        self.state.hazard == Hazard::Radiation,
+                                        t,
+                                    );
+                                    ui.add_space(10.0);
+                                    mini_metric(
+                                        ui,
+                                        "CO2",
+                                        self.state.hazard.co2_val(),
+                                        "mmHg",
+                                        self.state.hazard == Hazard::HighCo2,
+                                        t,
+                                    );
+                                    ui.add_space(10.0);
+                                    mini_metric(
+                                        ui,
+                                        "O2",
+                                        self.state.hazard.o2(),
+                                        "sat",
+                                        self.state.hazard == Hazard::Hypoxia,
+                                        t,
+                                    );
+                                });
+                            } else {
+                                ui.label(RichText::new("Test hazard alerts").size(t.sz(14.0)).color(t.accent_input));
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(format!("Active: {}", self.state.hazard.label()))
+                                        .size(t.sz(12.5))
+                                        .color(t.text_main),
+                                );
+                                ui.label(
+                                    RichText::new("Open to test radiation, high CO2, or low oxygen.")
+                                        .size(t.sz(11.5))
+                                        .color(t.text_muted),
+                                );
+                            }
+                        }
+                    }
+                });
+            },
+        );
+
+        // Zone 3: Footer Metadata
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(footer_l)
+                    .family(FontFamily::Monospace)
+                    .size(t.sz(10.5))
+                    .color(t.text_muted),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(footer_r)
+                        .family(FontFamily::Monospace)
+                        .size(t.sz(10.5))
+                        .color(t.text_muted),
+                );
+            });
+        });
+    }
+
+    fn render_detail_overlay(&mut self, ui: &mut Ui, screen_rect: Rect, panel: PanelId, t: Tokens) {
+        let is_input = self.state.mode == Mode::Input;
+        let inner = screen_rect.shrink(16.0);
+        let accent = if is_input { t.accent_input } else { t.accent_view };
+
+        let (kicker, title) = match (panel, is_input) {
+            (PanelId::Health, false) => ("01 · Health & suit", "Heart rate, hydration & ration plan"),
+            (PanelId::Health, true) => ("01 · Edit mode", "Log meal & re-entry salt/water"),
+            (PanelId::Hub, false) => ("02 · Hub & navigation", "Range to habitat & telemetry link"),
+            (PanelId::Hub, true) => ("02 · Edit mode", "Mission phase & hub sync"),
+            (PanelId::Tech, false) => ("03 · Comms & display", "Local safety engine, offline queue & display"),
+            (PanelId::Tech, true) => ("03 · Edit mode", "Comms blackout & astronaut accessibility"),
+            (PanelId::Hazard, false) => ("04 · Hazard & env", "Radiation, cabin gas & safety actions"),
+            (PanelId::Hazard, true) => ("04 · Edit mode", "Test emergency hazard alerts"),
+        };
+
+        ui.allocate_ui_at_rect(inner, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(kicker)
+                            .family(FontFamily::Monospace)
+                            .size(t.sz(11.0))
+                            .color(accent),
+                    );
+                    ui.label(RichText::new(title).size(t.sz(17.0)).color(t.text_main));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let btn_h = (t.button_h - 4.0).max(40.0);
+                    let (btn_rect, resp) =
+                        ui.allocate_exact_size(Vec2::new(148.0, btn_h), Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    let fill = if resp.hovered() { t.raised_hover } else { t.raised_bg };
+                    let p = ui.painter();
+                    p.rect(btn_rect, 8.0, fill, Stroke::new(t.stroke_w, t.hairline_strong));
+                    p.text(
+                        btn_rect.center(),
+                        Align2::CENTER_CENTER,
+                        "Return to grid [Esc]",
+                        FontId::proportional(t.sz(12.5)),
+                        t.text_main,
+                    );
+                    if resp.clicked() {
+                        self.state.active_panel = None;
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.painter().line_segment(
+                [
+                    Pos2::new(inner.left(), ui.cursor().top()),
+                    Pos2::new(inner.right(), ui.cursor().top()),
+                ],
+                Stroke::new(1.0_f32, t.hairline),
+            );
+            ui.add_space(8.0);
+
+            let body_h = (ui.available_height() - 28.0).max(100.0);
+            egui::ScrollArea::vertical()
+                .max_height(body_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| match panel {
+                    PanelId::Health => self.overlay_health(ui, is_input, t),
+                    PanelId::Hub => self.overlay_hub(ui, is_input, t),
+                    PanelId::Tech => self.overlay_tech(ui, is_input, t),
+                    PanelId::Hazard => self.overlay_hazard(ui, is_input, t),
+                });
+
+            ui.add_space(4.0);
+            ui.painter().line_segment(
+                [
+                    Pos2::new(inner.left(), ui.cursor().top()),
+                    Pos2::new(inner.right(), ui.cursor().top()),
+                ],
+                Stroke::new(1.0_f32, t.hairline),
+            );
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("[C] Cycle mode · [1-4] Panels · [H] High-Visor contrast")
+                        .family(FontFamily::Monospace)
+                        .size(t.sz(10.0))
+                        .color(t.text_muted),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("Profile: {}", self.state.a11y.summary()))
+                            .family(FontFamily::Monospace)
+                            .size(t.sz(10.0))
+                            .color(t.text_muted),
+                    );
+                });
+            });
+        });
+    }
+
+    fn overlay_health(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+        let p = self.state.phase;
+        let ration = self.state.compute_ration();
+        if !is_input {
+            ui.columns(4, |c| {
+                stat_card(
+                    &mut c[0],
+                    "Heart rate",
+                    &format!("{} bpm", self.state.live_hr),
+                    t.nominal,
+                    &format!("Safe {}", p.hr_range()),
+                    t,
+                );
+                stat_card(&mut c[1], "Blood pressure", p.bp(), t.text_main, "Cuffless optical", t);
+                stat_card(
+                    &mut c[2],
+                    "Calorie deficit",
+                    &format!("{} kcal", self.state.calorie_deficit),
+                    t.caution,
+                    &format!("{:.1} kcal/min burn", p.kcal_rate()),
+                    t,
+                );
+                stat_card(
+                    &mut c[3],
+                    "Hydration loss",
+                    &format!("{} mL", self.state.sweat_deficit_ml),
+                    t.accent_view,
+                    &format!("Logged +{} mL", self.state.water_ml),
+                    t,
+                );
+            });
+            ui.add_space(12.0);
+            rag_box(ui, "Recommended ISS ration", Some(ration.name), &ration.reason, false, t);
+            ui.add_space(8.0);
+            rag_box(ui, p.rag_title(), None, p.rag_text(), p == Phase::ReEntry, t);
+        } else {
+            ui.label(RichText::new("Last meal eaten").size(t.sz(12.5)).color(t.text_body));
+            ui.add_space(4.0);
+            ui.columns(4, |c| {
+                for (idx, pct) in [100_u32, 50, 25, 0].iter().enumerate() {
+                    let sub = match *pct {
+                        100 => "Full meal",
+                        0 => "Skipped",
+                        _ => "Partial",
+                    };
+                    if glove_button(
+                        &mut c[idx],
+                        &format!("{pct}% eaten"),
+                        sub,
+                        self.state.meal_eaten_pct == *pct,
+                        t,
+                    )
+                    .clicked()
+                    {
+                        self.state.set_meal(*pct);
                     }
                 }
-            }
-            "bpm" => match num {
-                Some(n) => {
-                    self.bpm_base = n.clamp(30.0, 200.0);
-                    self.log(format!("[OK] Taban nabız {:.0}", self.bpm_base));
+            });
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new("Re-entry fluid & salt intake (goal: 1,150 mL + 9 tablets)")
+                    .size(t.sz(12.5))
+                    .color(t.text_body),
+            );
+            ui.add_space(4.0);
+            ui.columns(2, |c| {
+                if glove_button(
+                    &mut c[0],
+                    "+ 250 mL water",
+                    &format!("{} / 1,150 mL", self.state.water_ml),
+                    false,
+                    t,
+                )
+                .clicked()
+                {
+                    self.state.water_ml += 250;
+                    self.state.sweat_deficit_ml = self.state.sweat_deficit_ml.saturating_sub(250);
                 }
-                None => self.log("[HATA] kullanım: bpm 80"),
-            },
-            "o2" => match num {
-                Some(n) => {
-                    self.spo2 = n.clamp(0.0, 100.0);
-                    self.log(format!("[OK] SpO2 %{:.0}", self.spo2));
+                if glove_button(
+                    &mut c[1],
+                    "+ 1g salt tablet",
+                    &format!("{} / 9 tablets", self.state.nacl_count),
+                    false,
+                    t,
+                )
+                .clicked()
+                {
+                    if self.state.nacl_count < 9 {
+                        self.state.nacl_count += 1;
+                    }
                 }
-                None => self.log("[HATA] kullanım: o2 97"),
-            },
-            "rad" => match num {
-                Some(n) => {
-                    self.radiation = n.clamp(0.0, 100.0);
-                    self.log(format!("[OK] Radyasyon %{:.1}", self.radiation));
-                }
-                None => self.log("[HATA] kullanım: rad 20"),
-            },
-            "clear" => self.logs.clear(),
-            _ => self.log("[HATA] bilinmeyen komut ('help')"),
+            });
+            ui.add_space(12.0);
+            rag_box(ui, "Updated ration", Some(ration.name), &ration.reason, false, t);
         }
     }
 
-    fn simulate(&mut self, t: f64) {
-        self.t = t;
-        let target = self.bpm_base + 4.0 * (t * 0.9).sin() as f32 + 2.0 * (t * 2.3).sin() as f32;
-        self.bpm += (target - self.bpm) * 0.05;
-        if t - self.last_sample > 0.1 {
-            self.last_sample = t;
-            self.hr_hist.push_back([t, self.bpm as f64]);
-            while self.hr_hist.front().map_or(false, |p| p[0] < t - 20.0) {
-                self.hr_hist.pop_front();
+    fn overlay_hub(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+        let p = self.state.phase;
+        if !is_input {
+            ui.columns(4, |c| {
+                stat_card(&mut c[0], "Hub range", &format!("{} m", self.state.distance_m), t.accent_view, "Bearing 042° NE", t);
+                stat_card(&mut c[1], "Flight phase", p.name(), t.text_main, &format!("Safe {}", p.hr_range()), t);
+                stat_card(&mut c[2], "Earth signal lag", "18m 42s", t.caution, "Suit runs locally", t);
+                stat_card(
+                    &mut c[3],
+                    "Surface LAN",
+                    if self.state.online { "Connected" } else { "Offline" },
+                    if self.state.online { t.nominal } else { t.caution },
+                    "192.168.1.10",
+                    t,
+                );
+            });
+            ui.add_space(12.0);
+            rag_box(ui, p.rag_title(), None, p.rag_text(), false, t);
+        } else {
+            ui.label(RichText::new("Switch flight phase").size(t.sz(12.5)).color(t.text_body));
+            ui.add_space(4.0);
+            ui.columns(4, |c| {
+                for (i, ph) in Phase::ALL.iter().enumerate() {
+                    if glove_button(&mut c[i], ph.name(), ph.hr_range(), self.state.phase == *ph, t).clicked() {
+                        self.state.set_phase(*ph);
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            ui.label(RichText::new("Hub link & waypoint").size(t.sz(12.5)).color(t.text_body));
+            ui.add_space(4.0);
+            ui.columns(2, |c| {
+                if glove_button(
+                    &mut c[0],
+                    "Force sync to hub",
+                    &format!("Send {} queued", self.state.buffered_packets),
+                    false,
+                    t,
+                )
+                .clicked()
+                {
+                    self.state.buffered_packets = 0;
+                    self.state.online = true;
+                }
+                if glove_button(&mut c[1], "Set airlock waypoint", "145 m range", false, t).clicked() {
+                    self.state.distance_m = 145;
+                }
+            });
+        }
+    }
+
+    fn overlay_tech(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+        if !is_input {
+            ui.columns(4, |c| {
+                stat_card(&mut c[0], "Safety engine", "1 Hz local", t.nominal, "No Earth lag", t);
+                stat_card(
+                    &mut c[1],
+                    "Surface LAN",
+                    if self.state.online { "Online" } else { "Offline" },
+                    if self.state.online { t.nominal } else { t.caution },
+                    "Auto-sync active",
+                    t,
+                );
+                stat_card(
+                    &mut c[2],
+                    "Offline queue",
+                    &format!("{} pkts", self.state.buffered_packets),
+                    t.text_main,
+                    "Saved on suit",
+                    t,
+                );
+                stat_card(&mut c[3], "Medical guide DB", "64 MB local", t.accent_view, "NASA-STD-3001", t);
+            });
+            ui.add_space(12.0);
+            rag_box(
+                ui,
+                "Offline crater safety & display profile",
+                None,
+                &format!(
+                    "When crater walls block surface radio, your suit monitors NASA-STD-3001 thresholds locally every second and stores packets until reconnect. Active display accessibility: {}.",
+                    self.state.a11y.summary()
+                ),
+                false,
+                t,
+            );
+        } else {
+            ui.label(RichText::new("Astronaut accessibility settings").size(t.sz(13.0)).color(t.text_main));
+            ui.add_space(4.0);
+            ui.columns(2, |c| {
+                let hi_on = self.state.a11y.contrast == ContrastMode::HighVisor;
+                if glove_button(
+                    &mut c[0],
+                    "High-visor sunlight contrast [H]",
+                    if hi_on { "ON" } else { "OFF" },
+                    hi_on,
+                    t,
+                )
+                .clicked()
+                {
+                    self.state.a11y.contrast = if hi_on {
+                        ContrastMode::Standard
+                    } else {
+                        ContrastMode::HighVisor
+                    };
+                }
+                if glove_button(
+                    &mut c[1],
+                    "Large text size",
+                    if self.state.a11y.large_text { "115%" } else { "100%" },
+                    self.state.a11y.large_text,
+                    t,
+                )
+                .clicked()
+                {
+                    self.state.a11y.large_text = !self.state.a11y.large_text;
+                }
+            });
+            ui.add_space(8.0);
+            ui.columns(2, |c| {
+                if glove_button(
+                    &mut c[0],
+                    "Colorblind-safe + shape cues",
+                    if self.state.a11y.colorblind_safe { "ON" } else { "OFF" },
+                    self.state.a11y.colorblind_safe,
+                    t,
+                )
+                .clicked()
+                {
+                    self.state.a11y.colorblind_safe = !self.state.a11y.colorblind_safe;
+                }
+                if glove_button(
+                    &mut c[1],
+                    "Extra glove button size",
+                    if self.state.a11y.glove_targets { "52 px" } else { "44 px" },
+                    self.state.a11y.glove_targets,
+                    t,
+                )
+                .clicked()
+                {
+                    self.state.a11y.glove_targets = !self.state.a11y.glove_targets;
+                }
+            });
+            ui.add_space(8.0);
+            if glove_button(
+                ui,
+                "Reduced motion (static pulse indicator)",
+                if self.state.a11y.reduced_motion { "ON" } else { "OFF" },
+                self.state.a11y.reduced_motion,
+                t,
+            )
+            .clicked()
+            {
+                self.state.a11y.reduced_motion = !self.state.a11y.reduced_motion;
             }
+
+            ui.add_space(12.0);
+            ui.label(RichText::new("LAN blackout test & local queue").size(t.sz(12.5)).color(t.text_body));
+            ui.add_space(4.0);
+            let label = if self.state.online {
+                "Simulate crater radio blackout"
+            } else {
+                "Reconnect radio & flush packets"
+            };
+            let right = if self.state.online {
+                "Online"
+            } else {
+                "Offline · buffering"
+            };
+            if glove_button(ui, label, right, !self.state.online, t).clicked() {
+                self.state.online = !self.state.online;
+                if self.state.online {
+                    self.state.buffered_packets = 0;
+                }
+            }
+            ui.add_space(8.0);
+            stat_card(
+                ui,
+                "Queued telemetry frames",
+                &format!("{} frames", self.state.buffered_packets),
+                t.accent_view,
+                "Saves 1 frame/s offline; sends automatically on reconnect.",
+                t,
+            );
+        }
+    }
+
+    fn overlay_hazard(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+        let h = self.state.hazard;
+        if !is_input {
+            ui.columns(4, |c| {
+                stat_card(
+                    &mut c[0],
+                    "Radiation",
+                    h.rad(),
+                    if h == Hazard::Radiation { t.critical } else { t.nominal },
+                    "Limit < 2.0 mSv/d",
+                    t,
+                );
+                stat_card(
+                    &mut c[1],
+                    "Suit CO2",
+                    h.co2(),
+                    if h == Hazard::HighCo2 { t.caution } else { t.nominal },
+                    "Limit < 4.0 mmHg",
+                    t,
+                );
+                stat_card(
+                    &mut c[2],
+                    "Tissue oxygen",
+                    h.o2(),
+                    if h == Hazard::Hypoxia { t.critical } else { t.nominal },
+                    "Safe >= 92%",
+                    t,
+                );
+                stat_card(&mut c[3], "Surface wind", "3 m/s NE", t.text_main, "Visibility clear", t);
+            });
+            ui.add_space(12.0);
+            rag_box(ui, h.rag_title(), None, h.rag_text(), h != Hazard::Nominal, t);
+        } else {
+            ui.label(RichText::new("Select hazard scenario to test").size(t.sz(12.5)).color(t.text_body));
+            ui.add_space(4.0);
+            for pair in Hazard::ALL.chunks(2) {
+                ui.columns(2, |c| {
+                    for (i, hk) in pair.iter().enumerate() {
+                        let sub = if *hk == Hazard::Nominal { "Clear alert" } else { "Trigger alert" };
+                        if glove_button(&mut c[i], hk.label(), sub, self.state.hazard == *hk, t).clicked() {
+                            self.state.hazard = *hk;
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+            }
+            ui.add_space(4.0);
+            rag_box(ui, h.rag_title(), None, h.rag_text(), h != Hazard::Nominal, t);
         }
     }
 }
 
-// ───────────────────────── Değer → renk ─────────────────────────
-fn lvl_low(p: &Pal, v: f32, warn_below: f32, danger_below: f32) -> Color32 {
-    if v < danger_below {
-        p.danger
-    } else if v < warn_below {
-        p.warn
+// ───────────────────────── Accessible Instrument Primitives ─────────────────────────
+fn fit_16_by_9(bounds: Rect) -> Rect {
+    let target = 16.0_f32 / 9.0_f32;
+    let (w, h) = if bounds.width() / bounds.height() > target {
+        (bounds.height() * target, bounds.height())
     } else {
-        p.ok
-    }
-}
-fn lvl_band(p: &Pal, v: f32, ok_lo: f32, ok_hi: f32, bad_lo: f32, bad_hi: f32) -> Color32 {
-    if v < bad_lo || v > bad_hi {
-        p.danger
-    } else if v < ok_lo || v > ok_hi {
-        p.warn
-    } else {
-        p.ok
-    }
-}
-fn cardinal(deg: f32) -> &'static str {
-    ["K", "KD", "D", "GD", "G", "GB", "B", "KB"][((deg.rem_euclid(360.0) + 22.5) / 45.0) as usize % 8]
-}
-fn rel_word(rel: f32) -> &'static str {
-    ["ÖN", "SAĞ-ÖN", "SAĞ", "SAĞ-ARKA", "ARKA", "SOL-ARKA", "SOL", "SOL-ÖN"]
-        [((rel.rem_euclid(360.0) + 22.5) / 45.0) as usize % 8]
+        (bounds.width(), bounds.width() / target)
+    };
+    Rect::from_center_size(bounds.center(), Vec2::new(w, h))
 }
 
-// ───────────────────────── Çizim yardımcıları ─────────────────────────
-fn heart(painter: &egui::Painter, c: Pos2, size: f32, color: Color32) {
-    let n = 56;
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(c, color);
-    for i in 0..n {
-        let t = i as f32 / n as f32 * std::f32::consts::TAU;
-        let x = 16.0 * t.sin().powi(3);
-        let y = 13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
-        mesh.colored_vertex(Pos2::new(c.x + x * size / 34.0, c.y - (y + 2.5) * size / 34.0), color);
+fn draw_status_shape(painter: &egui::Painter, center: Pos2, level: StatusLevel, color: Color32) {
+    match level {
+        StatusLevel::Nominal => {
+            painter.circle_filled(center, 4.0, color);
+        }
+        StatusLevel::Caution => {
+            let pts = vec![
+                Pos2::new(center.x, center.y - 4.5),
+                Pos2::new(center.x + 4.5, center.y + 3.5),
+                Pos2::new(center.x - 4.5, center.y + 3.5),
+            ];
+            painter.add(Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        StatusLevel::Critical => {
+            let rect = Rect::from_center_size(center, Vec2::splat(8.0));
+            painter.rect_filled(rect, 1.5, color);
+        }
     }
-    for i in 0..n {
-        mesh.add_triangle(0, 1 + i as u32, 1 + ((i + 1) % n) as u32);
-    }
-    painter.add(Shape::mesh(mesh));
 }
 
-fn heart_beat(ui: &mut Ui, p: &Pal, size: f32, bpm: f32, t: f64) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size * 1.35), Sense::hover());
-    let phase = ((t * bpm as f64 / 60.0) % 1.0) as f32;
-    let pulse = (1.0 - phase * 3.0).max(0.0).powi(2);
-    heart(ui.painter(), rect.center(), size * (1.0 + 0.2 * pulse), p.danger);
+fn status_chip(ui: &mut Ui, level: StatusLevel, label: &str, color: Color32, t: Tokens) {
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+        draw_status_shape(ui.painter(), r.center(), level, color);
+        ui.label(RichText::new(label).size(t.sz(13.5)).color(color));
+    });
 }
 
-fn card(ui: &mut Ui, p: &Pal, title: &str, min_h: f32, add: impl FnOnce(&mut Ui)) -> egui::Response {
-    egui::Frame::none()
-        .fill(p.panel)
-        .stroke(Stroke::new(1.0, p.edge))
-        .rounding(14.0)
+fn draw_corridor_bar(
+    ui: &mut Ui,
+    width: f32,
+    val: f32,
+    lo: f32,
+    hi: f32,
+    marker_col: Color32,
+    t: Tokens,
+) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 8.0), Sense::hover());
+    let p = ui.painter();
+    let track = Rect::from_min_size(Pos2::new(rect.left(), rect.center().y - 2.0), Vec2::new(width, 4.0));
+    p.rect_filled(track, 2.0, t.hairline);
+
+    // Safe middle corridor zone
+    let safe_left = track.left() + width * 0.20;
+    let safe_w = width * 0.60;
+    let safe_rect = Rect::from_min_size(Pos2::new(safe_left, track.top()), Vec2::new(safe_w, 4.0));
+    p.rect_filled(safe_rect, 2.0, t.hairline_strong);
+
+    let span = (hi - lo).max(1.0);
+    let norm = ((val - lo) / span).clamp(0.0, 1.0);
+    let x = safe_left + safe_w * norm;
+    p.circle_filled(Pos2::new(x, track.center().y), 3.5, marker_col);
+}
+
+fn mini_metric(ui: &mut Ui, name: &str, val: &str, unit: &str, alerted: bool, t: Tokens) {
+    let col = if alerted { t.critical } else { t.text_main };
+    let bar_col = if alerted { t.critical } else { t.nominal };
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(3.0, 14.0), Sense::hover());
+            ui.painter().rect_filled(r, 1.0, bar_col);
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(format!("{name} {val}"))
+                        .family(FontFamily::Monospace)
+                        .size(t.sz(11.5))
+                        .color(col),
+                );
+                ui.label(
+                    RichText::new(unit)
+                        .family(FontFamily::Monospace)
+                        .size(t.sz(9.5))
+                        .color(t.text_muted),
+                );
+            });
+        });
+    });
+}
+
+fn stat_card(ui: &mut Ui, label: &str, value: &str, val_color: Color32, note: &str, t: Tokens) {
+    Frame::none()
+        .fill(t.card_bg)
+        .stroke(Stroke::new(t.stroke_w, t.hairline))
+        .rounding(8.0)
         .inner_margin(12.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if min_h > 0.0 {
-                ui.set_min_height((min_h - 24.0).max(0.0));
-            }
-            ui.label(RichText::new(title).size(12.0).strong().color(p.dim));
-            ui.add_space(4.0);
-            add(ui);
+            ui.label(RichText::new(label).size(t.sz(11.5)).color(t.text_muted));
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(value)
+                    .family(FontFamily::Monospace)
+                    .size(t.sz(18.0))
+                    .color(val_color),
+            );
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(note)
+                    .family(FontFamily::Monospace)
+                    .size(t.sz(10.5))
+                    .color(t.text_muted),
+            );
+        });
+}
+
+fn rag_box(ui: &mut Ui, header: &str, headline: Option<&str>, body: &str, danger: bool, t: Tokens) {
+    let (bg, stroke, bar_col, hdr_col) = if danger {
+        (t.alert_bg, Stroke::new(t.stroke_w, t.critical), t.critical, t.critical)
+    } else {
+        (t.card_bg, Stroke::new(t.stroke_w, t.hairline), t.accent_view, t.accent_view)
+    };
+
+    let resp = Frame::none()
+        .fill(bg)
+        .stroke(stroke)
+        .rounding(8.0)
+        .inner_margin(Margin {
+            left: 16.0,
+            right: 12.0,
+            top: 10.0,
+            bottom: 10.0,
         })
-        .response
-}
-
-/// Dikey dikdörtgen progress bar
-fn vbar(ui: &mut Ui, p: &Pal, frac: f32, color: Color32, size: Vec2) {
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 6.0, p.bar_bg);
-    painter.rect_stroke(rect, 6.0, Stroke::new(1.5, color));
-    let inner = rect.shrink(4.0);
-    let h = inner.height() * frac.clamp(0.0, 1.0);
-    let fill = Rect::from_min_max(Pos2::new(inner.left(), inner.bottom() - h), inner.right_bottom());
-    painter.rect_filled(fill, 3.0, color);
-}
-
-/// Dikey bar + sağında büyük değer yazısı
-fn metric(ui: &mut Ui, p: &Pal, title: &str, frac: f32, text: String, color: Color32, sub: &str) {
-    card(ui, p, title, 0.0, |ui| {
-        ui.horizontal(|ui| {
-            vbar(ui, p, frac, color, Vec2::new(40.0, 140.0));
-            ui.vertical(|ui| {
-                ui.add_space(34.0);
-                ui.label(RichText::new(text).size(38.0).strong().color(color));
-                ui.label(RichText::new(sub).size(13.0).color(p.dim));
-            });
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(header).size(t.sz(12.0)).color(hdr_col));
+            if let Some(hl) = headline {
+                ui.add_space(2.0);
+                ui.label(RichText::new(hl).size(t.sz(14.0)).color(t.text_main));
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new(body).size(t.sz(12.5)).color(t.text_body));
         });
-    });
+
+    let r = resp.response.rect;
+    ui.painter().line_segment(
+        [Pos2::new(r.left() + 1.5, r.top() + 8.0), Pos2::new(r.left() + 1.5, r.bottom() - 8.0)],
+        Stroke::new(2.5_f32, bar_col),
+    );
 }
 
-/// Yatay aralık göstergesi (yeşil = normal bölge)
-fn range_bar(ui: &mut Ui, p: &Pal, val: f32, min: f32, max: f32, ok_lo: f32, ok_hi: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 6.0, p.bar_bg);
-    let x = |v: f32| rect.left() + rect.width() * ((v - min) / (max - min)).clamp(0.0, 1.0);
-    let zone = Rect::from_min_max(Pos2::new(x(ok_lo), rect.top()), Pos2::new(x(ok_hi), rect.bottom()));
-    painter.rect_filled(zone, 4.0, p.ok.gamma_multiply(0.45));
-    painter.rect_stroke(rect, 6.0, Stroke::new(1.0, p.edge));
-    let mx = x(val);
-    painter.line_segment([Pos2::new(mx, rect.top() - 2.0), Pos2::new(mx, rect.bottom() + 2.0)], Stroke::new(4.0, p.text));
+fn glove_button(ui: &mut Ui, left: &str, right: &str, selected: bool, t: Tokens) -> egui::Response {
+    let (bg, border, text_col) = if selected {
+        (t.card_input_hover, t.accent_input, t.accent_input)
+    } else {
+        (t.raised_bg, t.hairline_strong, t.text_main)
+    };
+    let desired = Vec2::new(ui.available_width(), t.button_h);
+    let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let fill = if resp.hovered() && !selected {
+        t.raised_hover
+    } else {
+        bg
+    };
+    let p = ui.painter();
+    p.rect(rect, 8.0, fill, Stroke::new(t.stroke_w, border));
+    p.text(
+        Pos2::new(rect.left() + 12.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        left,
+        FontId::proportional(t.sz(13.0)),
+        text_col,
+    );
+    p.text(
+        Pos2::new(rect.right() - 12.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        right,
+        FontId::monospace(t.sz(11.0)),
+        t.text_muted,
+    );
+    resp
 }
 
-fn kv(ui: &mut Ui, p: &Pal, k: &str, v: String, col: Color32) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(k).color(p.dim));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(v).size(20.0).strong().color(col));
-        });
-    });
-}
-
-fn blood_row(ui: &mut Ui, p: &Pal, name: &str, val: &mut f32, range: std::ops::RangeInclusive<f32>, unit: &str, color: Color32) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(name).color(p.dim));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.1} {unit}", *val)).size(22.0).strong().color(color));
-        });
-    });
-    ui.spacing_mut().slider_width = ui.available_width() - 8.0;
-    ui.add(egui::Slider::new(val, range).show_value(false).trailing_fill(true));
-}
-
-/// Pusula kadranı. needle_deg: ibre açısı (üst = 0°, saat yönü)
-fn compass(ui: &mut Ui, p: &Pal, size: f32, labels: [&str; 4], needle_deg: f32, needle_col: Color32, marker: Option<(f32, Color32)>) {
+fn draw_heart_icon(ui: &mut Ui, size: f32, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let c = rect.center();
-    let r = size * 0.5 - 4.0;
-    let painter = ui.painter();
-    painter.circle_filled(c, r, p.bar_bg);
-    painter.circle_stroke(c, r, Stroke::new(2.0, p.edge));
-    for i in 0..36 {
-        let a = (i as f32 * 10.0).to_radians();
-        let d = Vec2::new(a.sin(), -a.cos());
-        let len = if i % 3 == 0 { 10.0 } else { 5.0 };
-        painter.line_segment([c + d * (r - len), c + d * r], Stroke::new(1.0, p.dim));
+    let mut pts = Vec::with_capacity(48);
+    for i in 0..48 {
+        let t = i as f32 / 48.0 * std::f32::consts::TAU;
+        let x = 16.0 * t.sin().powi(3);
+        let y = 13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
+        pts.push(Pos2::new(c.x + x * size / 36.0, c.y - (y + 2.0) * size / 36.0));
     }
-    for (i, l) in labels.iter().enumerate() {
-        let a = (i as f32 * 90.0).to_radians();
-        let d = Vec2::new(a.sin(), -a.cos());
-        painter.text(c + d * (r - 24.0), Align2::CENTER_CENTER, *l, FontId::proportional(13.0), if i == 0 { p.accent } else { p.dim });
-    }
-    if let Some((deg, col)) = marker {
-        let a = deg.to_radians();
-        let d = Vec2::new(a.sin(), -a.cos());
-        painter.circle_filled(c + d * (r - 9.0), 7.0, col);
-    }
-    let a = needle_deg.to_radians();
-    let d = Vec2::new(a.sin(), -a.cos());
-    let n = Vec2::new(-d.y, d.x);
-    let tip = c + d * (r * 0.55);
-    let base = c + d * (r * 0.1);
-    painter.add(Shape::convex_polygon(vec![tip, base + n * 7.0, base - n * 7.0], needle_col, Stroke::NONE));
-    painter.line_segment([c, c - d * (r * 0.22)], Stroke::new(3.0, p.dim));
-    painter.circle_filled(c, 5.0, p.text);
+    ui.painter().add(Shape::closed_line(pts, Stroke::new(1.5_f32, color)));
 }
 
-// ───────────────────────── Ana döngü ─────────────────────────
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let t = ctx.input(|i| i.time);
-        self.simulate(t);
-        let p = self.pal();
-        self.apply_visuals(ctx, &p);
-        if (ctx.zoom_factor() - self.ui_scale).abs() > 0.001 {
-            ctx.set_zoom_factor(self.ui_scale);
-        }
-        ctx.request_repaint();
+fn draw_compass_dial(ui: &mut Ui, size: f32, bearing_rad: f32, color: Color32, t: Tokens) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let c = rect.center();
+    let r = size * 0.42;
+    let p = ui.painter();
+    p.circle_stroke(c, r, Stroke::new(t.stroke_w, t.hairline_strong));
 
-        // ── Üst çubuk ──
-        egui::TopBottomPanel::top("header")
-            .exact_height(52.0)
-            .frame(egui::Frame::none().fill(p.panel).inner_margin(egui::Margin::symmetric(14.0, 6.0)))
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("AEGIS-BIO").size(20.0).strong().color(p.accent));
-                    ui.label(RichText::new(format!("{}  •  EVA_SPACEWALK", self.planet)).size(13.0).color(p.dim));
-                    let (txt, col) = self.suit_summary(&p);
-                    if col != p.ok {
-                        let k = if self.blink && col == p.danger { 0.6 + 0.4 * (t * 6.0).sin().abs() as f32 } else { 1.0 };
-                        let [r, g, b, _] = col.to_srgba_unmultiplied();
-                        let c2 = Color32::from_rgb((r as f32 * k) as u8, (g as f32 * k) as u8, (b as f32 * k) as u8);
-                        ui.label(RichText::new(format!(" {txt} ")).strong().color(Color32::BLACK).background_color(c2));
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let s = t as u64;
-                        ui.label(RichText::new(format!("MET {:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)).size(14.0).color(p.dim));
-                        ui.label(RichText::new(format!("{:.0} BPM", self.bpm)).size(16.0).strong().color(p.danger));
-                    });
-                });
-            });
+    for k in 0..4 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_2;
+        let d = Vec2::new(a.sin(), -a.cos());
+        p.line_segment([c + d * (r - 3.0), c + d * r], Stroke::new(1.0_f32, t.text_muted));
+    }
 
-        // ── Sol: sekmeler ──
-        egui::SidePanel::left("nav")
-            .exact_width(160.0)
-            .resizable(false)
-            .frame(egui::Frame::none().fill(p.panel).inner_margin(egui::Margin::same(10.0)))
-            .show(ctx, |ui| {
-                for (pg, label) in TABS {
-                    let active = self.page == pg;
-                    let btn = egui::Button::new(
-                        RichText::new(label).size(16.0).strong().color(if active { Color32::BLACK } else { p.text }),
-                    )
-                    .fill(if active { p.accent } else { p.panel_hi })
-                    .min_size(Vec2::new(ui.available_width(), 64.0));
-                    if ui.add(btn).clicked() {
-                        self.page = pg;
-                    }
-                }
-            });
+    let dir = Vec2::new(bearing_rad.sin(), -bearing_rad.cos());
+    let tip = c + dir * (r * 0.78);
+    p.line_segment([c, tip], Stroke::new(1.8_f32, color));
+    let perp = Vec2::new(-dir.y, dir.x);
+    let head1 = tip - dir * 5.0 + perp * 3.5;
+    let head2 = tip - dir * 5.0 - perp * 3.5;
+    p.line_segment([tip, head1], Stroke::new(1.8_f32, color));
+    p.line_segment([tip, head2], Stroke::new(1.8_f32, color));
+    p.circle_filled(c, 2.0, color);
+}
 
-        // ── İçerik ──
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(p.bg).inner_margin(egui::Margin::same(12.0)))
-            .show(ctx, |ui| match self.page {
-                Page::Home => self.home(ui, &p, t),
-                _ => {
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.page {
-                        Page::Health => self.health_page(ui, &p, t),
-                        Page::Hazards => self.hazards_page(ui, &p),
-                        Page::Hub => self.hub_page(ui, &p),
-                        Page::Settings => self.settings_page(ui, &p),
-                        Page::Home => {}
-                    });
-                }
-            });
+fn draw_refresh_icon(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
+    let steps = 20;
+    let mut pts = Vec::with_capacity(steps);
+    let start = -0.3_f32;
+    let span = 4.6_f32;
+    for i in 0..steps {
+        let a = start + span * (i as f32 / (steps - 1) as f32);
+        pts.push(Pos2::new(center.x + a.cos() * r, center.y + a.sin() * r));
+    }
+    painter.add(Shape::line(pts.clone(), Stroke::new(1.5_f32, color)));
+    if let Some(&end) = pts.last() {
+        painter.line_segment([end, Pos2::new(end.x - 4.0, end.y - 1.5)], Stroke::new(1.5_f32, color));
+        painter.line_segment([end, Pos2::new(end.x - 1.0, end.y + 4.0)], Stroke::new(1.5_f32, color));
     }
 }
 
-// ───────────────────────── Sayfalar ─────────────────────────
-impl App {
-    fn terminal(&mut self, ui: &mut Ui, p: &Pal, h: f32) {
-        egui::Frame::none()
-            .fill(p.bar_bg)
-            .stroke(Stroke::new(1.5, p.accent))
-            .rounding(14.0)
-            .inner_margin(12.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height((h - 24.0).max(120.0));
-                ui.label(RichText::new(">_ MERKEZ TERMİNAL (G/Ç)").size(13.0).strong().color(p.accent));
-                let sh = (h - 24.0 - 30.0 - 56.0).max(40.0);
-                egui::ScrollArea::vertical()
-                    .max_height(sh)
-                    .min_scrolled_height(sh)
-                    .auto_shrink([false, false])
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for l in &self.logs {
-                            let col = if l.starts_with("[HATA]") {
-                                p.danger
-                            } else if l.starts_with('>') {
-                                p.accent
-                            } else if l.starts_with("[SYNC]") {
-                                p.ok
-                            } else {
-                                p.text
-                            };
-                            ui.label(RichText::new(l).monospace().size(13.0).color(col));
-                        }
-                    });
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.input)
-                        .desired_width(f32::INFINITY)
-                        .font(FontId::monospace(15.0))
-                        .hint_text("komut: help"),
-                );
-                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    let cmd = std::mem::take(&mut self.input);
-                    self.run(cmd);
-                    r.request_focus();
-                }
-            });
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // ───── ANA EKRAN: kalp atışı, hub pusulası, merkez terminal (kare alan) ─────
-    fn home(&mut self, ui: &mut Ui, p: &Pal, t: f64) {
-        let hh = ui.available_height();
-        ui.columns(2, |c| {
-            // Sol kolon: kalp + hub pusulası
-            let h1 = hh * 0.42;
-            let r = card(&mut c[0], p, "KALP ATIŞI  (sağlık için dokun)", h1, |ui| {
-                ui.horizontal(|ui| {
-                    heart_beat(ui, p, 62.0, self.bpm, t);
-                    ui.vertical(|ui| {
-                        let col = lvl_band(p, self.bpm, 50.0, 100.0, 40.0, 130.0);
-                        ui.label(RichText::new(format!("{:.0}", self.bpm)).size(58.0).strong().color(col));
-                        ui.label(RichText::new("BPM").size(16.0).color(p.dim));
-                    });
-                });
-            });
-            let id = c[0].id().with("heart_click");
-            if c[0].interact(r.rect, id, Sense::click()).clicked() {
-                self.page = Page::Health;
-            }
-
-            let rel = (self.hub_bearing - self.heading).rem_euclid(360.0);
-            let dial = ((hh - h1 - 8.0) - 24.0 - 20.0 - 70.0).clamp(90.0, 190.0);
-            card(&mut c[0], p, "MERKEZ (HUB) PUSULASI", hh - h1 - 8.0, |ui| {
-                ui.vertical_centered(|ui| {
-                    compass(ui, p, dial, ["ÖN", "SAĞ", "ARKA", "SOL"], rel, p.accent, None);
-                });
-                kv(ui, p, "Uzaklık", format!("{:.0} m", self.hub_dist), p.text);
-                kv(ui, p, "Yön", format!("{:.0}° • {}", rel, rel_word(rel)), p.accent);
-            });
-
-            // Sağ kolon: merkez terminal (kareye yakın büyük alan)
-            self.terminal(&mut c[1], p, hh);
+    #[test]
+    fn high_visor_and_colorblind_tokens_resolve_distinctly() {
+        let std_t = Tokens::resolve(AccessibilityConfig::default());
+        let a11y_t = Tokens::resolve(AccessibilityConfig {
+            contrast: ContrastMode::HighVisor,
+            large_text: true,
+            colorblind_safe: true,
+            glove_targets: true,
+            reduced_motion: true,
         });
+
+        assert_ne!(std_t.screen_bg, a11y_t.screen_bg);
+        assert_ne!(std_t.nominal, a11y_t.nominal);
+        assert_eq!(a11y_t.button_h, 52.0);
+        assert!(a11y_t.sz(12.0) > std_t.sz(12.0));
     }
 
-    // ───── SAĞLIK sekmesindeki space suit bölümü ─────
-    fn suit_section(&mut self, ui: &mut Ui, p: &Pal, t: f64) {
-        let hh = 440.0;
-        ui.columns(2, |c| {
-            card(&mut c[0], p, "SPACE SUIT İZOLASYONU", hh, |ui| {
-                let avail = Vec2::new(ui.available_width(), (hh - 110.0).max(120.0));
-                self.suit_figure(ui, p, avail, t);
-                ui.horizontal(|ui| {
-                    for s in [Suit::Ok, Suit::Tear, Suit::Crit] {
-                        let (rc, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                        ui.painter().rect_filled(rc, 3.0, suit_color(p, s));
-                        ui.label(RichText::new(s.label()).size(12.0).color(p.dim));
-                    }
-                });
-            });
-
-            card(&mut c[1], p, "BÖLGE DURUMU", hh, |ui| {
-                let (txt, col) = self.suit_summary(p);
-                ui.label(RichText::new(txt).size(17.0).strong().color(col));
-                ui.add_space(2.0);
-                egui::ScrollArea::vertical().max_height((hh - 190.0).max(80.0)).auto_shrink([false, false]).show(ui, |ui| {
-                    for i in 0..PARTS.len() {
-                        self.part_row(ui, p, i);
-                    }
-                });
-                ui.separator();
-                let sel = self.sel;
-                let cur = self.suit[sel];
-                let tip = match cur {
-                    Suit::Ok => "Bölge sağlam.",
-                    Suit::Tear => "Yama kiti uygula, basınç kaybını izle.",
-                    Suit::Crit => "ACİL: hub'a dön, hava kilidini hazırla!",
-                };
-                ui.label(RichText::new(format!("{}: {}", PARTS[sel].name, tip)).size(13.0).color(suit_color(p, cur)));
-                ui.horizontal(|ui| {
-                    for (lab, st) in [("NORMAL", Suit::Ok), ("YIRTIK", Suit::Tear), ("KRİTİK", Suit::Crit)] {
-                        let b = egui::Button::new(RichText::new(lab).strong().color(Color32::BLACK)).fill(suit_color(p, st));
-                        if ui.add(b).clicked() {
-                            self.suit[sel] = st;
-                            self.log(format!("[SUIT] {} → {}", PARTS[sel].name, st.label()));
-                        }
-                    }
-                });
-            });
-        });
-    }
-
-    fn part_row(&mut self, ui: &mut Ui, p: &Pal, i: usize) {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
-        let st = self.suit[i];
-        let col = suit_color(p, st);
-        let painter = ui.painter();
-        if self.sel == i {
-            painter.rect_filled(rect, 8.0, p.panel_hi);
-            painter.rect_stroke(rect, 8.0, Stroke::new(1.5, p.accent));
-        } else if resp.hovered() {
-            painter.rect_filled(rect, 8.0, p.panel_hi.gamma_multiply(0.6));
-        }
-        painter.circle_filled(Pos2::new(rect.left() + 14.0, rect.center().y), 6.0, col);
-        painter.text(Pos2::new(rect.left() + 30.0, rect.center().y), Align2::LEFT_CENTER, PARTS[i].name, FontId::proportional(15.0), p.text);
-        painter.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, st.label(), FontId::proportional(14.0), col);
-        if resp.clicked() {
-            self.sel = i;
-        }
-    }
-
-    fn suit_figure(&mut self, ui: &mut Ui, p: &Pal, avail: Vec2, t: f64) {
-        let (rect, _) = ui.allocate_exact_size(avail, Sense::hover());
-        let s = (rect.width() / 100.0).min(rect.height() / 168.0);
-        let origin = Pos2::new(rect.center().x - 50.0 * s, rect.center().y - 84.0 * s);
-        let painter = ui.painter().clone();
-        let pulse = if self.blink { 0.6 + 0.4 * (t * 6.0).sin().abs() as f32 } else { 1.0 };
-
-        for (i, part) in PARTS.iter().enumerate() {
-            let r = Rect::from_min_size(
-                Pos2::new(origin.x + part.x * s, origin.y + part.y * s),
-                Vec2::new(part.w * s, part.h * s),
-            );
-            let resp = ui.interact(r, ui.id().with(("suit_part", i)), Sense::click());
-            let st = self.suit[i];
-            let fill = match st {
-                Suit::Ok => p.suit,
-                Suit::Tear => p.warn,
-                Suit::Crit => {
-                    let [cr, cg, cb, _] = p.danger.to_srgba_unmultiplied();
-                    Color32::from_rgb((cr as f32 * pulse) as u8, (cg as f32 * pulse) as u8, (cb as f32 * pulse) as u8)
-                }
-            };
-            let edge = if resp.hovered() { p.text } else { p.edge };
-            if part.circle {
-                painter.circle_filled(r.center(), r.width() / 2.0, fill);
-                painter.circle_stroke(r.center(), r.width() / 2.0, Stroke::new(2.0, edge));
-                // vizör
-                let v = Rect::from_center_size(r.center() + Vec2::new(0.0, 1.5 * s), Vec2::new(r.width() * 0.7, r.height() * 0.42));
-                painter.rect_filled(v, 8.0 * s.min(1.5), p.bar_bg);
-            } else {
-                painter.rect_filled(r, 6.0 * s.min(1.5), fill);
-                painter.rect_stroke(r, 6.0 * s.min(1.5), Stroke::new(2.0, edge));
-            }
-            // yırtık işareti (zikzak)
-            if st != Suit::Ok {
-                let pts: Vec<Pos2> = (0..6)
-                    .map(|k| {
-                        let fx = r.left() + r.width() * (0.12 + 0.76 * k as f32 / 5.0);
-                        let fy = r.center().y + if k % 2 == 0 { -1.0 } else { 1.0 } * r.height().min(r.width()) * 0.16;
-                        Pos2::new(fx, fy)
-                    })
-                    .collect();
-                painter.add(Shape::line(pts, Stroke::new(2.5, p.bar_bg)));
-            }
-            if self.sel == i {
-                painter.rect_stroke(r.expand(4.0), 8.0, Stroke::new(2.5, p.accent));
-            }
-            if resp.clicked() {
-                self.sel = i;
-            }
-            resp.on_hover_text(part.name);
-        }
-    }
-
-    // ───── SAĞLIK ─────
-    fn health_page(&mut self, ui: &mut Ui, p: &Pal, t: f64) {
-        // Space suit görünümü aç/kapa
-        ui.horizontal(|ui| {
-            let (lab, fill, tc) = if self.show_suit {
-                ("SPACE SUIT İZOLASYONU: AÇIK  (gizle)", p.accent, Color32::BLACK)
-            } else {
-                ("SPACE SUIT İZOLASYONU: KAPALI  (göster)", p.panel_hi, p.text)
-            };
-            let b = egui::Button::new(RichText::new(lab).strong().color(tc)).fill(fill).min_size(Vec2::new(380.0, 46.0));
-            if ui.add(b).clicked() {
-                self.show_suit = !self.show_suit;
-            }
-            let (txt, col) = self.suit_summary(p);
-            ui.label(RichText::new(txt).strong().color(col));
-        });
-        if self.show_suit {
-            self.suit_section(ui, p, t);
-        }
-
-        ui.columns(3, |c| {
-            // Kolon 1: oksijen + nabız
-            let spo2c = lvl_low(p, self.spo2, 95.0, 90.0);
-            metric(&mut c[0], p, "OKSİJEN ORANI (SpO2)", self.spo2 / 100.0, format!("%{:.0}", self.spo2), spo2c, "kan doygunluğu");
-            card(&mut c[0], p, "NABIZ", 0.0, |ui| {
-                ui.horizontal(|ui| {
-                    heart_beat(ui, p, 44.0, self.bpm, t);
-                    ui.vertical(|ui| {
-                        let col = lvl_band(p, self.bpm, 50.0, 100.0, 40.0, 130.0);
-                        ui.label(RichText::new(format!("{:.0} BPM", self.bpm)).size(34.0).strong().color(col));
-                    });
-                });
-            });
-
-            // Kolon 2: kan sayımı + grafik
-            card(&mut c[1], p, "KAN BASINCI & KAN SAYIMI", 0.0, |ui| {
-                let bc = lvl_band(p, self.sys, 95.0, 135.0, 85.0, 160.0);
-                blood_row(ui, p, "Sistolik", &mut self.sys, 70.0..=190.0, "mmHg", bc);
-                blood_row(ui, p, "Diyastolik", &mut self.dia, 40.0..=120.0, "mmHg", p.accent);
-                blood_row(ui, p, "Nitrojen Doygunluğu", &mut self.nitrogen, 50.0..=100.0, "%", p.accent);
-                blood_row(ui, p, "Hemoglobin", &mut self.hemoglobin, 8.0..=20.0, "g/dL", p.accent);
-            });
-            card(&mut c[1], p, "NABIZ ZAMAN ÇİZELGESİ (BPM)", 0.0, |ui| {
-                let pts = PlotPoints::from(self.hr_hist.iter().copied().collect::<Vec<[f64; 2]>>());
-                Plot::new("hr_plot")
-                    .height(150.0)
-                    .allow_zoom(false)
-                    .allow_drag(false)
-                    .allow_scroll(false)
-                    .allow_boxed_zoom(false)
-                    .show_axes([false, true])
-                    .include_y(50.0)
-                    .include_y(130.0)
-                    .show(ui, |pu| pu.line(Line::new(pts).color(p.accent).width(2.5)));
-            });
-
-            // Kolon 3: sodyum + uyku
-            let na = self.sodium;
-            let nac = lvl_band(p, na, 135.0, 145.0, 130.0, 150.0);
-            let age = self.sodium_age_min as u32;
-            card(&mut c[2], p, "SODYUM (SON ÖLÇÜM)", 0.0, |ui| {
-                ui.label(RichText::new(format!("{na:.1} mmol/L")).size(38.0).strong().color(nac));
-                let state = if na < 135.0 { "DÜŞÜK" } else if na > 145.0 { "YÜKSEK" } else { "NORMAL" };
-                ui.label(RichText::new(state).size(15.0).strong().color(nac));
-                range_bar(ui, p, na, 125.0, 155.0, 135.0, 145.0);
-                ui.label(RichText::new(format!("Son ölçüm: {} sa {} dk önce  •  normal 135–145", age / 60, age % 60)).size(12.0).color(p.dim));
-            });
-            let sl = self.sleep_hours;
-            let slc = lvl_low(p, sl, 7.0, 5.0);
-            let sq = self.sleep_quality;
-            card(&mut c[2], p, "UYKU DURUMU", 0.0, |ui| {
-                ui.label(RichText::new(format!("{sl:.1} saat")).size(38.0).strong().color(slc));
-                let state = if sl >= 7.0 { "YETERLİ" } else if sl >= 5.0 { "YETERSİZ" } else { "KRİTİK" };
-                ui.label(RichText::new(state).size(15.0).strong().color(slc));
-                range_bar(ui, p, sl, 0.0, 10.0, 7.0, 9.0);
-                ui.add_space(4.0);
-                kv(ui, p, "Uyku kalitesi", format!("%{sq:.0}"), lvl_low(p, sq, 60.0, 40.0));
-            });
-        });
-    }
-
-    // ───── TEHLİKELER ─────
-    fn hazards_page(&mut self, ui: &mut Ui, p: &Pal) {
-        let t = self.t;
-        let wind = self.wind_speed + 0.8 * (t * 0.7).sin() as f32;
-        ui.columns(3, |c| {
-            // Radyasyon + hava durumu
-            let rc = if self.radiation >= 75.0 { p.danger } else if self.radiation >= 50.0 { p.warn } else { p.ok };
-            metric(&mut c[0], p, "UZAY RADYASYONU", self.radiation / 100.0, format!("%{:.1}", self.radiation), rc, "günlük doz limiti");
-            let temp = self.temp_str(self.temp_c);
-            card(&mut c[0], p, "GEZEGEN HAVA DURUMU", 0.0, |ui| {
-                kv(ui, p, "Gezegen", self.planet.clone(), p.accent);
-                kv(ui, p, "Sıcaklık", temp, p.text);
-                kv(ui, p, "Atmosfer basıncı", format!("{:.0} Pa", self.atm_pa), p.text);
-                let dc = if self.dust >= 70.0 { p.danger } else if self.dust >= 40.0 { p.warn } else { p.ok };
-                kv(ui, p, "Toz fırtınası riski", format!("%{:.0}", self.dust), dc);
-                range_bar(ui, p, self.dust, 0.0, 100.0, 0.0, 40.0);
-            });
-
-            // Rüzgar
-            card(&mut c[1], p, "RÜZGAR YÖNÜ & HIZI", 0.0, |ui| {
-                ui.vertical_centered(|ui| {
-                    // ok, rüzgarın ESTİĞİ yönü gösterir
-                    compass(ui, p, 190.0, ["K", "D", "G", "B"], self.wind_dir + 180.0, p.accent, None);
-                });
-                let wc = if wind >= 25.0 { p.danger } else if wind >= 15.0 { p.warn } else { p.ok };
-                kv(ui, p, "Hız", format!("{wind:.1} m/s"), wc);
-                kv(ui, p, "Geldiği yön", format!("{:.0}° • {}", self.wind_dir, cardinal(self.wind_dir)), p.text);
-            });
-
-            // Gezegene göre pusula
-            card(&mut c[2], p, "GEZEGEN PUSULASI", 0.0, |ui| {
-                ui.vertical_centered(|ui| {
-                    compass(ui, p, 190.0, ["K", "D", "G", "B"], self.heading, p.accent, Some((self.hub_bearing, p.ok)));
-                });
-                kv(ui, p, "Yönelimin", format!("{:.0}° • {}", self.heading, cardinal(self.heading)), p.accent);
-                kv(ui, p, "Hub yönü (yeşil nokta)", format!("{:.0}° • {}", self.hub_bearing, cardinal(self.hub_bearing)), p.ok);
-            });
-        });
-    }
-
-    // ───── HUB ─────
-    fn hub_page(&mut self, ui: &mut Ui, p: &Pal) {
-        ui.columns(3, |c| {
-            let hp = self.hub_pressure;
-            let hc = lvl_band(p, hp, 95.0, 105.0, 90.0, 110.0);
-            metric(&mut c[0], p, "MERKEZ HAVA BASINCI", hp / 120.0, format!("{hp:.1}"), hc, "kPa");
-            card(&mut c[0], p, &format!("MERKEZDEKİ ASTRONOTLAR ({})", self.hub_astronauts.len()), 0.0, |ui| {
-                if self.hub_astronauts.is_empty() {
-                    ui.label(RichText::new("Hub'da kimse yok.").color(p.dim));
-                }
-                for a in &self.hub_astronauts {
-                    ui.horizontal(|ui| {
-                        let (rc, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                        ui.painter().circle_filled(rc.center(), 6.0, p.ok);
-                        ui.label(RichText::new(a).size(16.0));
-                    });
-                }
-            });
-
-            card(&mut c[1], p, "MERKEZ HAVA KİLİDİ (KAPILAR)", 0.0, |ui| {
-                for d in self.doors.iter_mut() {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(d.name).size(16.0));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let (lab, col) = match d.state {
-                                Door::Closed => ("KAPALI", p.ok),
-                                Door::Open => ("AÇIK", p.warn),
-                                Door::Cycling => ("DÖNGÜDE", p.accent),
-                            };
-                            let b = egui::Button::new(RichText::new(lab).strong().color(Color32::BLACK))
-                                .fill(col)
-                                .min_size(Vec2::new(100.0, 36.0));
-                            if ui.add(b).clicked() {
-                                d.state = match d.state {
-                                    Door::Closed => Door::Cycling,
-                                    Door::Cycling => Door::Open,
-                                    Door::Open => Door::Closed,
-                                };
-                            }
-                        });
-                    });
-                }
-                ui.label(RichText::new("Dokun: Kapalı → Döngüde → Açık").size(12.0).color(p.dim));
-            });
-
-            let active = self.monitors.iter().filter(|m| m.on).count();
-            let total = self.monitors.len();
-            card(&mut c[2], p, &format!("AKTİF BİO MONİTÖRLER ({active}/{total})"), 0.0, |ui| {
-                for m in self.monitors.iter_mut() {
-                    ui.horizontal(|ui| {
-                        let (rc, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                        ui.painter().circle_filled(rc.center(), 6.0, if m.on { p.ok } else { p.dim });
-                        ui.label(RichText::new(m.name).size(15.0));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let b = egui::Button::new(RichText::new(if m.on { "AKTİF" } else { "KAPALI" }).strong().color(if m.on { Color32::BLACK } else { p.text }))
-                                .fill(if m.on { p.ok } else { p.panel_hi })
-                                .min_size(Vec2::new(80.0, 32.0));
-                            if ui.add(b).clicked() {
-                                m.on = !m.on;
-                            }
-                        });
-                    });
-                }
-            });
-        });
-    }
-
-    // ───── SEÇENEKLER ─────
-    fn settings_page(&mut self, ui: &mut Ui, p: &Pal) {
-        ui.columns(2, |c| {
-            card(&mut c[0], p, "PARLAKLIK", 0.0, |ui| {
-                ui.spacing_mut().slider_width = ui.available_width() - 8.0;
-                ui.add(egui::Slider::new(&mut self.brightness, 0.3..=1.5).show_value(false).trailing_fill(true));
-                ui.label(RichText::new(format!("%{:.0}", self.brightness * 100.0)).size(28.0).strong());
-            });
-            card(&mut c[0], p, "RENKLER (RGBA)", 0.0, |ui| {
-                for (lab, col) in [
-                    ("Vurgu rengi", &mut self.c_accent),
-                    ("Panel rengi (alfa dahil)", &mut self.c_panel),
-                    ("Arka plan", &mut self.c_bg),
-                    ("Normal / sağlam", &mut self.c_ok),
-                    ("Yırtık / uyarı (turuncu)", &mut self.c_warn),
-                    ("Kritik / tehlike (kırmızı)", &mut self.c_danger),
-                ] {
-                    ui.horizontal(|ui| {
-                        ui.color_edit_button_srgba_unmultiplied(col);
-                        ui.label(lab);
-                    });
-                }
-                if ui.button("Varsayılan renkler").clicked() {
-                    self.brightness = 1.0;
-                    self.c_bg = [10, 16, 28, 255];
-                    self.c_panel = [22, 32, 50, 240];
-                    self.c_accent = [70, 190, 255, 255];
-                    self.c_ok = [72, 212, 142, 255];
-                    self.c_warn = [255, 140, 30, 255];
-                    self.c_danger = [255, 62, 62, 255];
-                }
-            });
-
-            card(&mut c[1], p, "ÖZELLEŞTİRME", 0.0, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Sıcaklık birimi");
-                    ui.radio_value(&mut self.fahrenheit, false, "°C");
-                    ui.radio_value(&mut self.fahrenheit, true, "°F");
-                });
-                ui.checkbox(&mut self.show_suit, "Sağlık sekmesinde space suit panelini göster");
-                ui.checkbox(&mut self.blink, "Kritik uyarıları yanıp söndür");
-                ui.horizontal(|ui| {
-                    ui.label("Arayüz boyutu");
-                    for s in [0.8_f32, 1.0, 1.2, 1.4] {
-                        if ui.selectable_label((self.ui_scale - s).abs() < 0.01, format!("%{}", (s * 100.0) as i32)).clicked() {
-                            self.ui_scale = s;
-                        }
-                    }
-                });
-            });
-            card(&mut c[1], p, "KURULUM VE SENKRONİZASYON", 0.0, |ui| {
-                ui.label(RichText::new(format!("Veri seti: {DATASET_PATH}")).monospace().size(13.0).color(p.dim));
-                let b = egui::Button::new(RichText::new("VERİ SETİNİ YENİDEN OKU").strong().color(Color32::BLACK))
-                    .fill(p.accent)
-                    .min_size(Vec2::new(ui.available_width(), 56.0));
-                if ui.add(b).clicked() {
-                    self.sync_dataset();
-                }
-                ui.label(RichText::new(&self.sync_msg).color(p.ok));
-                ui.label(
-                    RichText::new("Dosya yoksa örnek veri seti otomatik oluşturulur. Dosyayı düzenleyip tekrar okutabilirsiniz (satır: anahtar=değer).")
-                        .size(12.0)
-                        .color(p.dim),
-                );
-            });
-        });
+    #[test]
+    fn reentry_phase_triggers_isotonic_ration() {
+        let mut s = BiomonState::default();
+        s.set_phase(Phase::ReEntry);
+        let plan = s.compute_ration();
+        assert_eq!(plan.short, "1.15 L + 9x NaCl");
+        assert_eq!(s.live_hr, Phase::ReEntry.base_hr());
     }
 }

@@ -29,3 +29,6 @@ Thumbs.db
 
 # Rust
 target/
+
+# Local SQLite DB
+data/*.db

@@ -1,7 +1,8 @@
 use crate::calc::{self, PanelAlertState, SafetyEvalInput};
 use crate::db::{
-    CrewInputHistoryRecord, CrewMember, Database, FoodCatalogItem, HubLabReport, MissionEphemeris,
-    NewSurgeonIncident, OsteoporosisDailyHistory, SansDailyHistory, SleepDailySummary,
+    CrewInputHistoryRecord, CrewMember, Database, DatasetProvenance, FoodCatalogItem, HubLabReport,
+    MissionEphemeris, NewSurgeonIncident, OsteoporosisDailyHistory, ReferenceEdaPoint,
+    ReferenceRadiationPoint, ResearchLabObservation, SansDailyHistory, SleepDailySummary,
     SurgeonIncident,
 };
 use crate::net::{HubLanServer, InboundPacket};
@@ -175,6 +176,10 @@ pub struct HubUiSnapshot {
     pub unacked_incidents: i64,
     pub surgeon_incidents: Vec<SurgeonIncident>,
     pub lab_reports: Vec<HubLabReport>,
+    pub radlab_series: Vec<ReferenceRadiationPoint>,
+    pub eda_environment: Vec<ReferenceEdaPoint>,
+    pub research_labs: Vec<ResearchLabObservation>,
+    pub dataset_provenance: Vec<DatasetProvenance>,
     pub sleep_summaries: Vec<SleepDailySummary>,
     pub sans_history: Vec<SansDailyHistory>,
     pub osteo_history: Vec<OsteoporosisDailyHistory>,
@@ -273,6 +278,12 @@ impl AppState {
         let unacked_incidents = db.count_unacked_incidents().unwrap_or(0);
         let surgeon_incidents = db.load_surgeon_incidents().unwrap_or_default();
         let lab_reports = db.load_hub_lab_reports().unwrap_or_default();
+        let radlab_series = db.load_radiation_series().unwrap_or_default();
+        let eda_environment = db.load_eda_environment().unwrap_or_default();
+        let research_labs = db
+            .load_research_lab_observations(None, Some("CBC"), 40)
+            .unwrap_or_default();
+        let dataset_provenance = db.load_dataset_provenance().unwrap_or_default();
         let sleep_summaries = db.load_sleep_summaries().unwrap_or_default();
         let sans_history = db.load_sans_history().unwrap_or_default();
         let osteo_history = db.load_osteo_history().unwrap_or_default();
@@ -413,6 +424,10 @@ impl AppState {
             unacked_incidents,
             surgeon_incidents,
             lab_reports,
+            radlab_series,
+            eda_environment,
+            research_labs,
+            dataset_provenance,
             sleep_summaries,
             sans_history,
             osteo_history,

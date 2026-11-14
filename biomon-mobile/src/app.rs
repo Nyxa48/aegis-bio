@@ -274,7 +274,8 @@ impl AppState {
             .unwrap_or_default();
         let unsynced = db.count_unsynced().unwrap_or_default();
 
-        let (earth_mars_au, one_way_light_min) = calc::interpolate_ephemeris(1.40, 1.44, 0.5);
+        // NASA JPL Horizons 2026-11-14 -> 2026-11-15 Earth-Mars ephemeris (AU)
+        let (earth_mars_au, one_way_light_min) = calc::interpolate_ephemeris(1.324362, 1.315854, 0.0);
 
         let mut snapshot = UiSnapshot {
             astronaut_id: config.astronaut_id,

@@ -199,3 +199,59 @@ CREATE TABLE IF NOT EXISTS hub_lab_reports (
     status_flag    TEXT NOT NULL CHECK (status_flag IN ('NOMINAL', 'ELEVATED', 'CRITICAL')),
     FOREIGN KEY (astronaut_id) REFERENCES crew_members(astronaut_id)
 );
+
+-- 12. Historical Reference Radiation Series (NASA/RadLab_2013_01_01.csv)
+CREATE TABLE IF NOT EXISTS reference_radiation_series (
+    timestamp_utc              TEXT NOT NULL,
+    instrument_id              TEXT NOT NULL,
+    absorbed_dose_rate_ugy_hr  REAL NOT NULL,
+    interval_sec               INTEGER,
+    interval_dose_ugy          REAL,
+    PRIMARY KEY (timestamp_utc, instrument_id)
+);
+
+-- 13. Historical Reference ISS vs Ground Environment (NASA/EDA RR-1 2014-09-25)
+CREATE TABLE IF NOT EXISTS reference_eda_environment (
+    recorded_at_utc    TEXT PRIMARY KEY,
+    co2_iss_ppm        REAL,
+    co2_ground_ppm     REAL,
+    temp_iss_c         REAL,
+    temp_ground_c      REAL,
+    humidity_iss_pct   REAL,
+    humidity_ground_pct REAL
+);
+
+-- 14. Historical Research Lab Observations (Unpivoted OSD-569/575/656 TRANSFORMED.csv)
+CREATE TABLE IF NOT EXISTS research_lab_observations (
+    obs_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    study_id        TEXT NOT NULL,
+    domain          TEXT NOT NULL, -- CBC, CMP, SERUM_CARDIO, SERUM_IMMUNE, SERUM_ALAMAR, URINE_IMMUNE
+    sample_name     TEXT NOT NULL,
+    subject_code    TEXT NOT NULL,
+    sample_matrix   TEXT NOT NULL,
+    timepoint       TEXT NOT NULL,
+    sort_order      INTEGER NOT NULL,
+    biomarker_name  TEXT NOT NULL,
+    measured_value  REAL NOT NULL,
+    unit            TEXT NOT NULL,
+    ref_min         REAL,
+    ref_max         REAL,
+    status_flag     TEXT NOT NULL CHECK (status_flag IN ('IN_RANGE', 'BELOW_REF', 'ABOVE_REF', 'NO_REF')),
+    source_file     TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_research_lab_dedup
+    ON research_lab_observations(study_id, domain, sample_name, biomarker_name);
+
+CREATE INDEX IF NOT EXISTS idx_research_lab_subject_time
+    ON research_lab_observations(subject_code, sort_order);
+
+-- 15. Dataset Provenance & Idempotency Manifest
+CREATE TABLE IF NOT EXISTS dataset_provenance (
+    file_name       TEXT PRIMARY KEY,
+    dataset_id      TEXT NOT NULL,
+    sha256          TEXT NOT NULL,
+    source_url      TEXT NOT NULL,
+    byte_size       INTEGER NOT NULL,
+    imported_at_utc TEXT NOT NULL
+);

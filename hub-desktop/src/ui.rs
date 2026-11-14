@@ -1843,6 +1843,145 @@ fn render_medical_and_incident_module(ui: &mut egui::Ui, app: &mut HubApp) {
 
     ui.add_space(12.0);
 
+    // 2B. NASA Historical Reference & Research Datasets (Non-Live)
+    section_frame(OUTLINE_VIEW).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.label(
+            RichText::new("NASA HISTORICAL REFERENCE & RESEARCH DATA (NON-LIVE)")
+                .size(22.0)
+                .strong()
+                .color(INK_PRIMARY),
+        );
+        ui.add_space(6.0);
+
+        let rad_n = app.snapshot.radlab_series.len();
+        let (rad_avg, rad_max) = if rad_n > 0 {
+            let sum: f64 = app
+                .snapshot
+                .radlab_series
+                .iter()
+                .map(|r| r.absorbed_dose_rate_ugy_hr)
+                .sum();
+            let mx = app
+                .snapshot
+                .radlab_series
+                .iter()
+                .map(|r| r.absorbed_dose_rate_ugy_hr)
+                .fold(0.0_f64, f64::max);
+            (sum / rad_n as f64, mx)
+        } else {
+            (0.0, 0.0)
+        };
+
+        let eda_n = app.snapshot.eda_environment.len();
+        let eda_co2_avg = if eda_n > 0 {
+            let vals: Vec<f64> = app
+                .snapshot
+                .eda_environment
+                .iter()
+                .filter_map(|e| e.co2_iss_ppm)
+                .collect();
+            if vals.is_empty() {
+                0.0
+            } else {
+                vals.iter().sum::<f64>() / vals.len() as f64
+            }
+        } else {
+            0.0
+        };
+
+        ui.label(
+            RichText::new(format!(
+                "RADLAB 2013-01-01 (Liulin-5-D3): {} pts | AVG {:.2} uGy/hr | MAX {:.2} uGy/hr    ||    EDA RR-1 2014-09-25: {} pts | ISS AVG CO2 {:.0} ppm    ||    PROVENANCE: {} SHA256-VERIFIED FILES",
+                rad_n,
+                rad_avg,
+                rad_max,
+                eda_n,
+                eda_co2_avg,
+                app.snapshot.dataset_provenance.len()
+            ))
+            .size(14.0)
+            .family(FontFamily::Monospace)
+            .color(INK_PRIMARY),
+        );
+        ui.add_space(8.0);
+
+        egui::Grid::new("nasa_research_obs_grid")
+            .striped(true)
+            .spacing(Vec2::new(14.0, 6.0))
+            .show(ui, |ui| {
+                for hdr in [
+                    "STUDY",
+                    "SUBJECT",
+                    "TIMEPOINT",
+                    "BIOMARKER",
+                    "VALUE",
+                    "REF RANGE",
+                    "STATUS",
+                ] {
+                    ui.label(RichText::new(hdr).size(14.0).strong().color(INK_PRIMARY));
+                }
+                ui.end_row();
+
+                for obs in app.snapshot.research_labs.iter().take(12) {
+                    let col = match obs.status_flag.as_str() {
+                        "ABOVE_REF" | "BELOW_REF" => OUTLINE_INPUT,
+                        _ => INK_PRIMARY,
+                    };
+                    ui.label(
+                        RichText::new(&obs.study_id)
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(&obs.subject_code)
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .strong()
+                            .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(&obs.timepoint)
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(&obs.biomarker_name)
+                            .size(14.0)
+                            .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(format!("{:.2} {}", obs.measured_value, obs.unit))
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .strong()
+                            .color(col),
+                    );
+                    let ref_txt = match (obs.ref_min, obs.ref_max) {
+                        (Some(lo), Some(hi)) => format!("{lo:.1}..{hi:.1}"),
+                        _ => "-".to_string(),
+                    };
+                    ui.label(
+                        RichText::new(ref_txt)
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(&obs.status_flag)
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .color(col),
+                    );
+                    ui.end_row();
+                }
+            });
+    });
+
+    ui.add_space(12.0);
+
     // 3. Daily Sleep Actigraphy Summary
     section_frame(OUTLINE_VIEW).show(ui, |ui| {
         ui.set_min_width(ui.available_width());

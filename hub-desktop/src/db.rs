@@ -164,6 +164,55 @@ pub struct HubLabReport {
     pub status_flag: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceRadiationPoint {
+    pub timestamp_utc: String,
+    pub instrument_id: String,
+    pub absorbed_dose_rate_ugy_hr: f64,
+    pub interval_sec: Option<i64>,
+    pub interval_dose_ugy: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceEdaPoint {
+    pub recorded_at_utc: String,
+    pub co2_iss_ppm: Option<f64>,
+    pub co2_ground_ppm: Option<f64>,
+    pub temp_iss_c: Option<f64>,
+    pub temp_ground_c: Option<f64>,
+    pub humidity_iss_pct: Option<f64>,
+    pub humidity_ground_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchLabObservation {
+    pub obs_id: i64,
+    pub study_id: String,
+    pub domain: String,
+    pub sample_name: String,
+    pub subject_code: String,
+    pub sample_matrix: String,
+    pub timepoint: String,
+    pub sort_order: i64,
+    pub biomarker_name: String,
+    pub measured_value: f64,
+    pub unit: String,
+    pub ref_min: Option<f64>,
+    pub ref_max: Option<f64>,
+    pub status_flag: String,
+    pub source_file: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetProvenance {
+    pub file_name: String,
+    pub dataset_id: String,
+    pub sha256: String,
+    pub source_url: String,
+    pub byte_size: i64,
+    pub imported_at_utc: String,
+}
+
 pub struct Database {
     conn: Connection,
     path: PathBuf,
@@ -375,22 +424,8 @@ impl Database {
             )?;
         }
 
-        // 3. Seed sample mission_ephemeris rows on the Hub
-        let ephemeris = [
-            ("2026-11-14", 1.42_f64, 11.81_f64),
-            ("2026-11-15", 1.43_f64, calc::calc_one_way_light_min(1.43)),
-            ("2026-11-16", 1.45_f64, calc::calc_one_way_light_min(1.45)),
-            ("2026-11-17", 1.47_f64, calc::calc_one_way_light_min(1.47)),
-            ("2026-11-18", 1.49_f64, calc::calc_one_way_light_min(1.49)),
-        ];
-
-        for (date, dist_au, light_min) in ephemeris {
-            self.conn.execute(
-                "INSERT OR IGNORE INTO mission_ephemeris (mission_date, distance_au, one_way_light_min)
-                 VALUES (?1, ?2, ?3)",
-                params![date, dist_au, light_min],
-            )?;
-        }
+        // 3. Seed mission_ephemeris & NASA reference/research datasets via nasa_seed.sql
+        self.seed_nasa_data()?;
 
         // 4. Seed initial telemetry_history rows for the crew roster
         let crew_telemetry = [
@@ -958,6 +993,113 @@ impl Database {
             .map_err(Into::into)
     }
 
+    pub fn seed_nasa_data(&mut self) -> Result<()> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM dataset_provenance",
+            [],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            self.conn.execute_batch(include_str!("../data/nasa_seed.sql"))?;
+        }
+        Ok(())
+    }
+
+    pub fn load_radiation_series(&self) -> Result<Vec<ReferenceRadiationPoint>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT timestamp_utc, instrument_id, absorbed_dose_rate_ugy_hr, interval_sec, interval_dose_ugy
+             FROM reference_radiation_series ORDER BY timestamp_utc ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ReferenceRadiationPoint {
+                timestamp_utc: row.get(0)?,
+                instrument_id: row.get(1)?,
+                absorbed_dose_rate_ugy_hr: row.get(2)?,
+                interval_sec: row.get(3)?,
+                interval_dose_ugy: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_eda_environment(&self) -> Result<Vec<ReferenceEdaPoint>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT recorded_at_utc, co2_iss_ppm, co2_ground_ppm, temp_iss_c, temp_ground_c, humidity_iss_pct, humidity_ground_pct
+             FROM reference_eda_environment ORDER BY recorded_at_utc ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ReferenceEdaPoint {
+                recorded_at_utc: row.get(0)?,
+                co2_iss_ppm: row.get(1)?,
+                co2_ground_ppm: row.get(2)?,
+                temp_iss_c: row.get(3)?,
+                temp_ground_c: row.get(4)?,
+                humidity_iss_pct: row.get(5)?,
+                humidity_ground_pct: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_research_lab_observations(
+        &self,
+        subject_code: Option<&str>,
+        domain: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ResearchLabObservation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT obs_id, study_id, domain, sample_name, subject_code, sample_matrix, timepoint,
+                    sort_order, biomarker_name, measured_value, unit, ref_min, ref_max, status_flag, source_file
+             FROM research_lab_observations
+             WHERE (?1 IS NULL OR subject_code = ?1)
+               AND (?2 IS NULL OR domain = ?2)
+             ORDER BY subject_code ASC, sort_order ASC, biomarker_name ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![subject_code, domain, limit as i64], |row| {
+            Ok(ResearchLabObservation {
+                obs_id: row.get(0)?,
+                study_id: row.get(1)?,
+                domain: row.get(2)?,
+                sample_name: row.get(3)?,
+                subject_code: row.get(4)?,
+                sample_matrix: row.get(5)?,
+                timepoint: row.get(6)?,
+                sort_order: row.get(7)?,
+                biomarker_name: row.get(8)?,
+                measured_value: row.get(9)?,
+                unit: row.get(10)?,
+                ref_min: row.get(11)?,
+                ref_max: row.get(12)?,
+                status_flag: row.get(13)?,
+                source_file: row.get(14)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_dataset_provenance(&self) -> Result<Vec<DatasetProvenance>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_name, dataset_id, sha256, source_url, byte_size, imported_at_utc
+             FROM dataset_provenance ORDER BY dataset_id ASC, file_name ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DatasetProvenance {
+                file_name: row.get(0)?,
+                dataset_id: row.get(1)?,
+                sha256: row.get(2)?,
+                source_url: row.get(3)?,
+                byte_size: row.get(4)?,
+                imported_at_utc: row.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn load_sleep_summaries(&self) -> Result<Vec<SleepDailySummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT astronaut_id, mission_day, total_sleep_min, target_sleep_min, sleep_efficiency_pct, awakenings, computed_at_utc
@@ -1134,5 +1276,28 @@ mod tests {
 
         let inputs = db.load_crew_input_history().expect("load crew inputs");
         assert!(!inputs.is_empty());
+
+        // Verify real NASA datasets imported via nasa_seed.sql
+        assert_eq!(ephem_all.len(), 8);
+        assert!((ephem_all[0].distance_au - 1.324362).abs() < 1e-4);
+
+        let rad = db.load_radiation_series().expect("load radlab");
+        assert_eq!(rad.len(), 1044);
+
+        let eda = db.load_eda_environment().expect("load eda");
+        assert_eq!(eda.len(), 289);
+
+        let cbc = db
+            .load_research_lab_observations(Some("C001"), Some("CBC"), 500)
+            .expect("load research labs");
+        assert!(!cbc.is_empty());
+        assert!(cbc.windows(2).all(|w| w[0].sort_order <= w[1].sort_order));
+
+        let prov = db.load_dataset_provenance().expect("load provenance");
+        assert_eq!(prov.len(), 11);
+
+        // Idempotency check: re-running seed_nasa_data must keep counts unchanged
+        db.seed_nasa_data().expect("idempotent reseed");
+        assert_eq!(db.load_dataset_provenance().unwrap().len(), 11);
     }
 }

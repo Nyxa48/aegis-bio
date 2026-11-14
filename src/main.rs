@@ -1,5 +1,5 @@
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Key, Layout, Margin,
+    self, Align, Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Id, Key, Layout, Margin,
     Order, Pos2, Rect, RichText, Rounding, Sense, Shape, Stroke, Ui, Vec2,
 };
 use std::time::{Duration, Instant};
@@ -12,45 +12,51 @@ mod palette {
     pub const INK_950: Color32 = Color32::from_rgb(7, 9, 13);
     pub const INK_900: Color32 = Color32::from_rgb(11, 14, 20);
     pub const INK_850: Color32 = Color32::from_rgb(17, 22, 31);
-    pub const INK_800: Color32 = Color32::from_rgb(23, 30, 42);
-    pub const INK_750: Color32 = Color32::from_rgb(28, 36, 50);
+    pub const INK_800: Color32 = Color32::from_rgb(24, 31, 44);
+    pub const INK_750: Color32 = Color32::from_rgb(29, 38, 53);
     pub const INK_700: Color32 = Color32::from_rgb(38, 48, 65);
-    pub const INK_600: Color32 = Color32::from_rgb(56, 70, 92);
+    pub const INK_600: Color32 = Color32::from_rgb(58, 73, 96);
 
     // High-Visor Solar Glare Ramp (AAA High Contrast)
     pub const VISOR_950: Color32 = Color32::from_rgb(0, 0, 0);
     pub const VISOR_900: Color32 = Color32::from_rgb(5, 7, 10);
     pub const VISOR_850: Color32 = Color32::from_rgb(12, 16, 22);
-    pub const VISOR_800: Color32 = Color32::from_rgb(20, 26, 36);
-    pub const VISOR_700: Color32 = Color32::from_rgb(92, 112, 142);
+    pub const VISOR_800: Color32 = Color32::from_rgb(22, 28, 39);
+    pub const VISOR_700: Color32 = Color32::from_rgb(96, 118, 150);
 
     // Warm Input Surface Tint
     pub const WARM_850: Color32 = Color32::from_rgb(22, 19, 15);
-    pub const WARM_800: Color32 = Color32::from_rgb(31, 27, 20);
-    pub const WARM_BORDER: Color32 = Color32::from_rgb(84, 62, 26);
+    pub const WARM_800: Color32 = Color32::from_rgb(32, 27, 20);
+    pub const WARM_BORDER: Color32 = Color32::from_rgb(94, 68, 28);
 
     // Text Ramp
     pub const SLATE_50: Color32 = Color32::from_rgb(244, 246, 250);
     pub const SLATE_200: Color32 = Color32::from_rgb(203, 213, 225);
     pub const SLATE_400: Color32 = Color32::from_rgb(138, 149, 168);
 
-    // Standard Aerospace Semantics
-    pub const SKY_400: Color32 = Color32::from_rgb(56, 189, 248);
-    pub const AMBER_400: Color32 = Color32::from_rgb(245, 158, 11);
+    // Distinct Per-Quadrant Subsystem Signatures
+    pub const HEALTH_EMERALD: Color32 = Color32::from_rgb(52, 211, 153); // 01 Health
+    pub const HUB_CYAN: Color32 = Color32::from_rgb(56, 189, 248); // 02 Navigation
+    pub const COMMS_COBALT: Color32 = Color32::from_rgb(129, 140, 248); // 03 Comms
+    pub const HAZARD_AMBER: Color32 = Color32::from_rgb(245, 158, 11); // 04 Env / Caution
+
+    // Semantic Status
     pub const MINT_400: Color32 = Color32::from_rgb(76, 195, 138);
+    pub const AMBER_400: Color32 = Color32::from_rgb(245, 158, 11);
     pub const CORAL_400: Color32 = Color32::from_rgb(239, 83, 80);
 
-    // Colorblind-Safe (Okabe-Ito Inspired High-Distinction)
+    // Colorblind-Safe (Okabe-Ito Distinct)
     pub const CB_TEAL: Color32 = Color32::from_rgb(0, 178, 148);
     pub const CB_BLUE: Color32 = Color32::from_rgb(86, 180, 233);
+    pub const CB_INDIGO: Color32 = Color32::from_rgb(148, 163, 255);
     pub const CB_ORANGE: Color32 = Color32::from_rgb(230, 159, 0);
     pub const CB_MAGENTA: Color32 = Color32::from_rgb(244, 114, 182);
 
     // Alert Surface
     pub const CRIMSON_900: Color32 = Color32::from_rgb(32, 14, 18);
-    pub const CRIMSON_850: Color32 = Color32::from_rgb(44, 18, 23);
+    pub const CRIMSON_850: Color32 = Color32::from_rgb(46, 19, 24);
     pub const CB_ALERT_BG: Color32 = Color32::from_rgb(36, 15, 29);
-    pub const CB_ALERT_HOVER: Color32 = Color32::from_rgb(48, 20, 38);
+    pub const CB_ALERT_HOVER: Color32 = Color32::from_rgb(50, 20, 40);
 }
 
 // ───────────────────────── Layer 2 & 3: Semantic & Component Tokens ─────────────────────────
@@ -88,7 +94,7 @@ impl AccessibilityConfig {
             parts.push("High-Visor");
         }
         if self.large_text {
-            parts.push("Large Type");
+            parts.push("Large");
         }
         if self.colorblind_safe {
             parts.push("CB-Safe");
@@ -122,6 +128,10 @@ struct Tokens {
     hairline_input: Color32,
     accent_view: Color32,
     accent_input: Color32,
+    quad_health: Color32,
+    quad_hub: Color32,
+    quad_comms: Color32,
+    quad_hazard: Color32,
     nominal: Color32,
     caution: Color32,
     critical: Color32,
@@ -134,6 +144,7 @@ struct Tokens {
     stroke_w: f32,
     button_h: f32,
     bezel_padding: f32,
+    anim_secs: f32,
 }
 
 impl Tokens {
@@ -149,12 +160,16 @@ impl Tokens {
             card_input_bg: palette::WARM_850,
             card_input_hover: palette::WARM_800,
             raised_bg: if high { palette::VISOR_800 } else { palette::INK_750 },
-            raised_hover: if high { palette::INK_700 } else { palette::INK_700 },
+            raised_hover: palette::INK_700,
             hairline: if high { palette::VISOR_700 } else { palette::INK_700 },
             hairline_strong: if high { palette::SLATE_200 } else { palette::INK_600 },
             hairline_input: if high { palette::AMBER_400 } else { palette::WARM_BORDER },
-            accent_view: if cb { palette::CB_BLUE } else { palette::SKY_400 },
+            accent_view: if cb { palette::CB_BLUE } else { palette::HUB_CYAN },
             accent_input: if cb { palette::CB_ORANGE } else { palette::AMBER_400 },
+            quad_health: if cb { palette::CB_TEAL } else { palette::HEALTH_EMERALD },
+            quad_hub: if cb { palette::CB_BLUE } else { palette::HUB_CYAN },
+            quad_comms: if cb { palette::CB_INDIGO } else { palette::COMMS_COBALT },
+            quad_hazard: if cb { palette::CB_ORANGE } else { palette::HAZARD_AMBER },
             nominal: if cb { palette::CB_TEAL } else { palette::MINT_400 },
             caution: if cb { palette::CB_ORANGE } else { palette::AMBER_400 },
             critical: if cb { palette::CB_MAGENTA } else { palette::CORAL_400 },
@@ -167,18 +182,28 @@ impl Tokens {
             stroke_w: if high { 1.5_f32 } else { 1.0_f32 },
             button_h: if cfg.glove_targets { 52.0 } else { 44.0 },
             bezel_padding: if cfg.glove_targets { 16.0 } else { 12.0 },
+            anim_secs: if cfg.reduced_motion { 0.0 } else { 0.20 },
         }
     }
 
     fn sz(&self, base: f32) -> f32 {
         (base * self.font_scale).round()
     }
+
+    fn quad_accent(&self, panel: PanelId) -> Color32 {
+        match panel {
+            PanelId::Health => self.quad_health,
+            PanelId::Hub => self.quad_hub,
+            PanelId::Tech => self.quad_comms,
+            PanelId::Hazard => self.quad_hazard,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusLevel {
-    Nominal, // Circle
-    Caution, // Triangle
+    Nominal,  // Circle
+    Caution,  // Triangle
     Critical, // Square
 }
 
@@ -324,10 +349,10 @@ impl Hazard {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Nominal => "All suit levels safe",
-            Self::Radiation => "High solar radiation",
-            Self::HighCo2 => "High CO2 (5.4 mmHg)",
-            Self::Hypoxia => "Low oxygen (89%)",
+            Self::Nominal => "All levels safe",
+            Self::Radiation => "Radiation alert",
+            Self::HighCo2 => "High CO2",
+            Self::Hypoxia => "Low O2",
         }
     }
 
@@ -342,6 +367,13 @@ impl Hazard {
         match self {
             Self::Radiation => "4.85",
             _ => "0.42",
+        }
+    }
+
+    fn rad_ratio(self) -> f32 {
+        match self {
+            Self::Radiation => 0.96,
+            _ => 0.21,
         }
     }
 
@@ -361,11 +393,27 @@ impl Hazard {
         }
     }
 
+    fn co2_ratio(self) -> f32 {
+        match self {
+            Self::HighCo2 => 0.90,
+            Self::Hypoxia => 0.56,
+            _ => 0.46,
+        }
+    }
+
     fn o2(self) -> &'static str {
         match self {
             Self::HighCo2 => "96%",
             Self::Hypoxia => "89%",
             _ => "98%",
+        }
+    }
+
+    fn o2_ratio(self) -> f32 {
+        match self {
+            Self::HighCo2 => 0.90,
+            Self::Hypoxia => 0.40,
+            _ => 0.96,
         }
     }
 
@@ -416,7 +464,7 @@ struct BiomonState {
     live_hr: i32,
     active_panel: Option<PanelId>,
     a11y: AccessibilityConfig,
-    pulse_phase: bool,
+    start_instant: Instant,
 }
 
 impl Default for BiomonState {
@@ -436,7 +484,7 @@ impl Default for BiomonState {
             live_hr: 88,
             active_panel: None,
             a11y: AccessibilityConfig::default(),
-            pulse_phase: false,
+            start_instant: Instant::now(),
         }
     }
 }
@@ -573,7 +621,6 @@ impl BiomonApp {
             return;
         }
         self.last_tick = Instant::now();
-        self.state.pulse_phase = !self.state.pulse_phase;
 
         let base = self.state.phase.base_hr()
             + if self.state.hazard == Hazard::Hypoxia { 14 } else { 0 };
@@ -596,7 +643,10 @@ impl eframe::App for BiomonApp {
         self.tick_1hz();
         let t = Tokens::resolve(self.state.a11y);
         self.apply_visuals(ctx, t);
-        ctx.request_repaint_after(Duration::from_millis(250));
+
+        // Smooth 30 Hz UI update for fluid card hover & suit heartbeat unless Reduced Motion is on
+        let refresh_ms = if self.state.a11y.reduced_motion { 250 } else { 33 };
+        ctx.request_repaint_after(Duration::from_millis(refresh_ms));
 
         egui::CentralPanel::default()
             .frame(Frame::none().fill(t.outer_bg).inner_margin(Margin::same(0.0)))
@@ -605,13 +655,12 @@ impl eframe::App for BiomonApp {
                 let margined = avail.shrink2(Vec2::new(avail.width() * 0.02, avail.height() * 0.02));
                 let screen_rect = fit_16_by_9(margined);
 
-                // Hardware display bezel
                 let painter = ui.painter();
                 painter.rect_filled(screen_rect, 16.0, t.screen_bg);
                 painter.rect_stroke(screen_rect, 16.0, Stroke::new(t.stroke_w, t.hairline_strong));
 
                 if let Some(panel) = self.state.active_panel {
-                    self.render_detail_overlay(ui, screen_rect, panel, t);
+                    self.render_detail_overlay(ui, ctx, screen_rect, panel, t);
                 } else {
                     self.render_quadrant_grid(ui, ctx, screen_rect, t);
                 }
@@ -629,6 +678,13 @@ impl BiomonApp {
             .input(|i| i.pointer.hover_pos())
             .is_some_and(|pos| pos.distance(center) <= ring_r);
 
+        // Smooth Main <-> Input mode blend factor
+        let mode_t = ctx.animate_bool_with_time(
+            Id::new("mode_blend"),
+            self.state.mode == Mode::Input,
+            t.anim_secs,
+        );
+
         let gap = 12.0_f32;
         let grid_rect = screen_rect.shrink(gap);
         let qw = (grid_rect.width() - gap) / 2.0;
@@ -641,7 +697,7 @@ impl BiomonApp {
                 PanelId::Health,
                 Rect::from_min_size(grid_rect.min, Vec2::new(qw, qh)),
                 Margin {
-                    left: t.bezel_padding + 2.0,
+                    left: t.bezel_padding + 6.0,
                     right: clear_x,
                     top: 12.0,
                     bottom: clear_y,
@@ -655,7 +711,7 @@ impl BiomonApp {
                 ),
                 Margin {
                     left: clear_x,
-                    right: t.bezel_padding + 2.0,
+                    right: t.bezel_padding + 6.0,
                     top: 12.0,
                     bottom: clear_y,
                 },
@@ -667,7 +723,7 @@ impl BiomonApp {
                     Vec2::new(qw, qh),
                 ),
                 Margin {
-                    left: t.bezel_padding + 2.0,
+                    left: t.bezel_padding + 6.0,
                     right: clear_x,
                     top: clear_y,
                     bottom: 12.0,
@@ -681,7 +737,7 @@ impl BiomonApp {
                 ),
                 Margin {
                     left: clear_x,
-                    right: t.bezel_padding + 2.0,
+                    right: t.bezel_padding + 6.0,
                     top: clear_y,
                     bottom: 12.0,
                 },
@@ -701,41 +757,58 @@ impl BiomonApp {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
 
-            let is_input = self.state.mode == Mode::Input;
+            let hover_t = ctx.animate_bool_with_time(
+                Id::new(("quad_hover", panel_id as u8)),
+                hovered,
+                t.anim_secs,
+            );
+
+            let quad_col = t.quad_accent(panel_id);
+            let main_bg = lerp_color(t.card_bg, t.card_hover, hover_t);
+            let input_bg = lerp_color(t.card_input_bg, t.card_input_hover, hover_t);
+            let normal_bg = lerp_color(main_bg, input_bg, mode_t);
             let bg = if is_alert {
-                if hovered { t.alert_hover } else { t.alert_bg }
-            } else if is_input {
-                if hovered { t.card_input_hover } else { t.card_input_bg }
-            } else if hovered {
-                t.card_hover
+                lerp_color(t.alert_bg, t.alert_hover, hover_t)
             } else {
-                t.card_bg
+                normal_bg
             };
 
-            let border_stroke = if is_alert {
-                Stroke::new(t.stroke_w.max(1.5_f32), t.critical)
-            } else if is_input {
-                Stroke::new(
-                    t.stroke_w,
-                    if hovered { t.accent_input } else { t.hairline_input },
-                )
-            } else {
-                Stroke::new(
-                    t.stroke_w,
-                    if hovered { t.hairline_strong } else { t.hairline },
-                )
-            };
+            let normal_border = lerp_color(
+                lerp_color(t.hairline, quad_col.gamma_multiply(0.55), hover_t),
+                lerp_color(t.hairline_input, t.accent_input, hover_t),
+                mode_t,
+            );
+            let border_col = if is_alert { t.critical } else { normal_border };
+            let border_w = t.stroke_w + hover_t * 0.5_f32;
 
             let painter = ui.painter();
             painter.rect_filled(q_rect, 12.0, bg);
-            painter.rect_stroke(q_rect, 12.0, border_stroke);
+            painter.rect_stroke(q_rect, 12.0, Stroke::new(border_w, border_col));
+
+            // Subsystem color-identity signature bar (lets astronauts recognize quadrant by color without reading)
+            let bar_col = if is_alert {
+                t.critical
+            } else {
+                lerp_color(quad_col, t.accent_input, mode_t * 0.45)
+            };
+            let is_left_side = matches!(panel_id, PanelId::Health | PanelId::Tech);
+            let bar_x = if is_left_side {
+                q_rect.left() + 4.0
+            } else {
+                q_rect.right() - 7.0
+            };
+            let bar_rect = Rect::from_min_max(
+                Pos2::new(bar_x, q_rect.top() + 12.0),
+                Pos2::new(bar_x + 3.0, q_rect.bottom() - 12.0),
+            );
+            painter.rect_filled(bar_rect, 2.0, bar_col);
 
             let content_rect = Rect::from_min_max(
                 Pos2::new(q_rect.min.x + pad.left, q_rect.min.y + pad.top),
                 Pos2::new(q_rect.max.x - pad.right, q_rect.max.y - pad.bottom),
             );
             ui.allocate_ui_at_rect(content_rect, |ui| {
-                self.render_quadrant_content(ui, panel_id, t);
+                self.render_quadrant_content(ui, ctx, panel_id, t);
             });
 
             if resp.clicked() && !pointer_in_cycle {
@@ -743,22 +816,23 @@ impl BiomonApp {
             }
         }
 
-        // Dead-Center Circular Cycle Dial (fixed layout center)
-        egui::Area::new(egui::Id::new("cycle_button"))
+        // Dead-Center Circular Cycle Dial (layout anchor)
+        egui::Area::new(Id::new("cycle_button"))
             .order(Order::Foreground)
-            .fixed_pos(center - Vec2::splat(ring_r))
+            .fixed_pos(center - Vec2::splat(ring_r + 4.0))
             .show(ctx, |ui| {
-                let (ring_rect, _) = ui.allocate_exact_size(Vec2::splat(ring_r * 2.0), Sense::hover());
+                let alloc_r = ring_r + 4.0;
+                let (ring_rect, _) = ui.allocate_exact_size(Vec2::splat(alloc_r * 2.0), Sense::hover());
                 let inner_rect = Rect::from_center_size(ring_rect.center(), Vec2::splat(inner_r * 2.0));
                 let resp = ui.interact(inner_rect, ui.id().with("cycle_inner"), Sense::click());
                 if resp.hovered() {
                     ctx.set_cursor_icon(CursorIcon::PointingHand);
                 }
 
+                let c_hover = ctx.animate_bool_with_time(Id::new("cycle_hover"), resp.hovered(), t.anim_secs);
                 let painter = ui.painter();
                 let c = ring_rect.center();
 
-                // Outer cutout bezel + subtle instrument cardinal ticks
                 painter.circle(c, ring_r, t.screen_bg, Stroke::new(t.stroke_w, t.hairline));
                 for k in 0..4 {
                     let a = k as f32 * std::f32::consts::FRAC_PI_2;
@@ -769,24 +843,21 @@ impl BiomonApp {
                     );
                 }
 
-                let (base_fill, hover_fill, ring_col, mode_lbl) = match self.state.mode {
-                    Mode::Main => (t.card_bg, t.raised_bg, t.accent_view, "View mode"),
-                    Mode::Input => (t.card_input_bg, t.card_input_hover, t.accent_input, "Edit mode"),
-                };
-                let fill_col = if resp.hovered() { hover_fill } else { base_fill };
-                let stroke_w = if resp.hovered() {
-                    t.stroke_w + 1.0_f32
-                } else {
-                    t.stroke_w + 0.5_f32
-                };
+                let main_fill = lerp_color(t.card_bg, t.raised_bg, c_hover);
+                let edit_fill = lerp_color(t.card_input_bg, t.card_input_hover, c_hover);
+                let fill_col = lerp_color(main_fill, edit_fill, mode_t);
+                let ring_col = lerp_color(t.accent_view, t.accent_input, mode_t);
+                let anim_r = inner_r + c_hover * 2.0;
+                let stroke_w = t.stroke_w + 0.5_f32 + c_hover * 1.0_f32;
 
-                painter.circle(c, inner_r, fill_col, Stroke::new(stroke_w, ring_col));
+                painter.circle(c, anim_r, fill_col, Stroke::new(stroke_w, ring_col));
 
-                let icon_col = if self.state.mode == Mode::Input {
-                    t.accent_input
+                let mode_lbl = if self.state.mode == Mode::Input {
+                    "Edit mode"
                 } else {
-                    t.text_main
+                    "View mode"
                 };
+                let icon_col = lerp_color(t.text_main, t.accent_input, mode_t);
                 draw_refresh_icon(painter, Pos2::new(c.x, c.y - inner_r * 0.44), inner_r * 0.14, icon_col);
 
                 painter.text(
@@ -803,8 +874,6 @@ impl BiomonApp {
                     FontId::proportional((inner_r * 0.13).clamp(10.0, 12.0) * t.font_scale),
                     ring_col,
                 );
-
-                // Phase + shortcut hint
                 painter.text(
                     Pos2::new(c.x, c.y + inner_r * 0.46),
                     Align2::CENTER_CENTER,
@@ -822,53 +891,61 @@ impl BiomonApp {
             });
     }
 
-    fn render_quadrant_content(&self, ui: &mut Ui, panel: PanelId, t: Tokens) {
+    fn render_quadrant_content(&self, ui: &mut Ui, ctx: &egui::Context, panel: PanelId, t: Tokens) {
         let is_input = self.state.mode == Mode::Input;
         let ration = self.state.compute_ration();
+        let accent = t.quad_accent(panel);
 
         let (num, title, footer_l, footer_r) = match panel {
             PanelId::Health => (
                 "01",
                 "Health & suit",
-                format!("Deficit {} kcal · {} mL", self.state.calorie_deficit, self.state.sweat_deficit_ml),
                 format!("BP {}", self.state.phase.bp()),
+                format!("-{} kcal · {} mL", self.state.calorie_deficit, self.state.sweat_deficit_ml),
             ),
             PanelId::Hub => (
                 "02",
-                "Hub & navigation",
-                "Bearing 042° NE".into(),
+                "Hub & nav",
+                "042° NE".into(),
                 "Lag 18m 42s".into(),
             ),
             PanelId::Tech => (
                 "03",
                 "Comms & display",
-                format!("Queue {} pkts", self.state.buffered_packets),
-                format!("A11y: {}", self.state.a11y.summary()),
+                format!("{} queued", self.state.buffered_packets),
+                self.state.a11y.summary(),
             ),
             PanelId::Hazard => (
                 "04",
                 "Hazard & env",
                 format!("SANS {}", self.state.hazard.sans()),
-                "Press [H] Hi-Vis".into(),
+                "[H] Hi-Vis".into(),
             ),
         };
 
-        // Zone 1: Header Strip
+        // Zone 1: Color-coded subsystem header (minimal reading needed)
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(num)
-                    .family(FontFamily::Monospace)
-                    .size(t.sz(11.0))
-                    .color(t.text_muted),
-            );
-            ui.label(RichText::new(title).size(t.sz(13.0)).color(t.text_body));
+            let tag_fill = accent.gamma_multiply(0.16);
+            Frame::none()
+                .fill(tag_fill)
+                .rounding(4.0)
+                .inner_margin(Margin::symmetric(5.0, 1.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(num)
+                            .family(FontFamily::Monospace)
+                            .size(t.sz(10.5))
+                            .color(accent),
+                    );
+                });
+            ui.label(RichText::new(title).size(t.sz(13.0)).color(t.text_main));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (tag_txt, tag_col) = if is_input {
                     ("Edit", t.accent_input)
                 } else {
-                    ("Live", t.text_muted)
+                    ("Live", accent)
                 };
-                ui.label(RichText::new(tag_txt).size(t.sz(11.0)).color(tag_col));
+                ui.label(RichText::new(tag_txt).size(t.sz(10.5)).color(tag_col));
             });
         });
 
@@ -881,168 +958,167 @@ impl BiomonApp {
             Stroke::new(1.0_f32, t.hairline),
         );
 
-        // Zone 2: Hero Telemetry / Control Body
-        let body_h = (ui.available_height() - 24.0).max(40.0);
+        // Smooth continuous pulse factor (0..1) for live cardiac rhythm
+        let pulse = if self.state.a11y.reduced_motion {
+            0.0
+        } else {
+            let phase = self.state.start_instant.elapsed().as_secs_f32()
+                * (self.state.live_hr.max(40) as f32 / 60.0)
+                * std::f32::consts::TAU;
+            (phase.sin() * 0.5 + 0.5).powi(2)
+        };
+
+        let body_h = (ui.available_height() - 22.0).max(40.0);
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), body_h),
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.vertical(|ui| {
-                    ui.add_space(4.0);
+                    ui.add_space(2.0);
                     match panel {
                         PanelId::Health => {
                             if !is_input {
-                                let (lvl, suit_col, suit_txt, suit_sub) = if self.state.hazard == Hazard::Hypoxia {
-                                    (StatusLevel::Critical, t.critical, "Hypoxia alert", "Check O2 valve")
+                                let (lvl, suit_col, suit_txt) = if self.state.hazard == Hazard::Hypoxia {
+                                    (StatusLevel::Critical, t.critical, "O2 LOW")
                                 } else if self.state.phase == Phase::ReEntry {
-                                    (StatusLevel::Caution, t.caution, "Fluid loading", "Drink + salt active")
+                                    (StatusLevel::Caution, t.caution, "FLUID+")
                                 } else {
-                                    (StatusLevel::Nominal, t.nominal, "Suit safe", "Vitals in range")
+                                    (StatusLevel::Nominal, t.quad_health, "SUIT OK")
                                 };
 
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.horizontal(|ui| {
-                                            let beat_color = if !self.state.a11y.reduced_motion && self.state.pulse_phase {
-                                                suit_col.gamma_multiply(0.8)
-                                            } else {
-                                                suit_col
-                                            };
-                                            draw_heart_icon(ui, 16.0, beat_color);
+                                            draw_heart_icon(ui, 16.0 + pulse * 1.6, suit_col);
                                             ui.label(
                                                 RichText::new(format!("{}", self.state.live_hr))
                                                     .family(FontFamily::Monospace)
-                                                    .size(t.sz(25.0))
+                                                    .size(t.sz(26.0))
                                                     .color(t.text_main),
                                             );
                                             ui.label(
                                                 RichText::new("bpm")
                                                     .family(FontFamily::Monospace)
-                                                    .size(t.sz(11.0))
+                                                    .size(t.sz(10.5))
                                                     .color(t.text_muted),
                                             );
                                         });
-                                        // Safe corridor bar — immediate visual glance of where BPM sits
                                         let (lo, hi) = self.state.phase.hr_bounds();
-                                        draw_corridor_bar(
-                                            ui,
-                                            116.0,
+                                        let hr_anim = ctx.animate_value_with_time(
+                                            Id::new("hr_smooth"),
                                             self.state.live_hr as f32,
-                                            lo as f32,
-                                            hi as f32,
-                                            suit_col,
-                                            t,
+                                            t.anim_secs,
                                         );
-                                        ui.label(
-                                            RichText::new(format!("Safe {}", self.state.phase.hr_range()))
-                                                .family(FontFamily::Monospace)
-                                                .size(t.sz(10.5))
-                                                .color(t.text_muted),
-                                        );
+                                        draw_corridor_bar(ui, 108.0, hr_anim, lo as f32, hi as f32, suit_col, t);
+                                        ui.add_space(2.0);
+                                        status_chip(ui, lvl, suit_txt, suit_col, t);
                                     });
 
-                                    ui.add_space(8.0);
-                                    ui.vertical(|ui| {
-                                        status_chip(ui, lvl, suit_txt, suit_col, t);
-                                        ui.add_space(2.0);
-                                        ui.label(RichText::new(suit_sub).size(t.sz(11.5)).color(t.text_body));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        // Mini Spacesuit Silhouette showing O2 Helmet, Cardio Core, CO2 Scrubber & Rad Shell
+                                        draw_mini_spacesuit(
+                                            ui,
+                                            46.0,
+                                            self.state.phase,
+                                            self.state.hazard,
+                                            pulse,
+                                            t,
+                                        );
                                     });
                                 });
                             } else {
-                                ui.label(RichText::new("Log meal & landing fluids").size(t.sz(14.0)).color(t.accent_input));
+                                status_chip(ui, StatusLevel::Caution, "Meal & water log", t.accent_input, t);
                                 ui.add_space(4.0);
                                 ui.label(
-                                    RichText::new(format!("Last meal: {}% eaten", self.state.meal_eaten_pct))
-                                        .size(t.sz(12.5))
+                                    RichText::new(format!("{}% meal · {} mL", self.state.meal_eaten_pct, self.state.water_ml))
+                                        .family(FontFamily::Monospace)
+                                        .size(t.sz(14.0))
                                         .color(t.text_main),
-                                );
-                                ui.label(
-                                    RichText::new("Open to record food % or 1,150 mL + salt tablets.")
-                                        .size(t.sz(11.5))
-                                        .color(t.text_muted),
                                 );
                             }
                         }
                         PanelId::Hub => {
                             if !is_input {
+                                let dist_anim = ctx.animate_value_with_time(
+                                    Id::new("dist_smooth"),
+                                    self.state.distance_m as f32,
+                                    t.anim_secs,
+                                );
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.label(
-                                                RichText::new(format!("{}", self.state.distance_m))
+                                                RichText::new(format!("{:.0}", dist_anim))
                                                     .family(FontFamily::Monospace)
-                                                    .size(t.sz(25.0))
+                                                    .size(t.sz(26.0))
                                                     .color(t.text_main),
                                             );
                                             ui.label(
-                                                RichText::new("m to hub")
+                                                RichText::new("m")
                                                     .family(FontFamily::Monospace)
-                                                    .size(t.sz(11.0))
+                                                    .size(t.sz(11.5))
                                                     .color(t.text_muted),
                                             );
                                         });
                                         ui.label(
-                                            RichText::new(format!("Phase: {}", self.state.phase.name()))
-                                                .size(t.sz(12.5))
+                                            RichText::new(self.state.phase.name())
+                                                .size(t.sz(13.0))
                                                 .color(t.text_body),
                                         );
                                         ui.label(
                                             RichText::new(ration.short)
                                                 .size(t.sz(11.5))
-                                                .color(t.accent_view),
+                                                .color(t.quad_hub),
                                         );
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        draw_compass_dial(ui, 44.0, 42.0_f32.to_radians(), t.accent_view, t);
+                                        draw_compass_dial(ui, 44.0, 42.0_f32.to_radians(), t.quad_hub, t);
                                     });
                                 });
                             } else {
-                                ui.label(RichText::new("Mission phase & hub sync").size(t.sz(14.0)).color(t.accent_input));
+                                status_chip(ui, StatusLevel::Caution, "Phase & sync", t.accent_input, t);
                                 ui.add_space(4.0);
                                 ui.label(
-                                    RichText::new(format!("Current phase: {}", self.state.phase.name()))
-                                        .size(t.sz(12.5))
+                                    RichText::new(self.state.phase.name())
+                                        .family(FontFamily::Monospace)
+                                        .size(t.sz(15.0))
                                         .color(t.text_main),
-                                );
-                                ui.label(
-                                    RichText::new("Open to switch phase, flush buffer, or set range.")
-                                        .size(t.sz(11.5))
-                                        .color(t.text_muted),
                                 );
                             }
                         }
                         PanelId::Tech => {
                             if !is_input {
-                                if self.state.hazard != Hazard::Nominal {
-                                    status_chip(ui, StatusLevel::Critical, "1 action alert", t.critical, t);
-                                } else {
-                                    status_chip(ui, StatusLevel::Nominal, "No pending alerts", t.nominal, t);
-                                }
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new("Local safety guide: NASA-STD-3001 ready")
-                                        .size(t.sz(11.5))
-                                        .color(t.text_body),
-                                );
-                                ui.add_space(2.0);
-                                if self.state.online {
-                                    status_chip(ui, StatusLevel::Nominal, "Hub link online", t.nominal, t);
-                                } else {
-                                    status_chip(ui, StatusLevel::Caution, "Offline · saving locally", t.caution, t);
-                                }
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        if self.state.online {
+                                            status_chip(ui, StatusLevel::Nominal, "Online", t.nominal, t);
+                                        } else {
+                                            status_chip(ui, StatusLevel::Caution, "Offline", t.caution, t);
+                                        }
+                                        ui.add_space(2.0);
+                                        if self.state.hazard != Hazard::Nominal {
+                                            status_chip(ui, StatusLevel::Critical, "1 alert", t.critical, t);
+                                        } else {
+                                            ui.label(
+                                                RichText::new("STD-3001 active")
+                                                    .family(FontFamily::Monospace)
+                                                    .size(t.sz(11.5))
+                                                    .color(t.quad_comms),
+                                            );
+                                        }
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        draw_signal_bars(ui, 30.0, self.state.online, t.quad_comms, t.caution, t);
+                                    });
+                                });
                             } else {
-                                ui.label(RichText::new("Comms, buffer & accessibility").size(t.sz(14.0)).color(t.accent_input));
+                                status_chip(ui, StatusLevel::Caution, "Blackout & A11y", t.accent_input, t);
                                 ui.add_space(4.0);
-                                let link_txt = if self.state.online {
-                                    "Link: Online (surface LAN)".to_string()
-                                } else {
-                                    format!("Link: Offline ({} queued)", self.state.buffered_packets)
-                                };
-                                ui.label(RichText::new(link_txt).size(t.sz(12.0)).color(t.text_main));
                                 ui.label(
-                                    RichText::new("Open for LAN blackout test & astronaut display settings.")
-                                        .size(t.sz(11.5))
-                                        .color(t.text_muted),
+                                    RichText::new(if self.state.online { "LAN ON" } else { "LAN OFF" })
+                                        .family(FontFamily::Monospace)
+                                        .size(t.sz(14.0))
+                                        .color(t.text_main),
                                 );
                             }
                         }
@@ -1055,47 +1131,45 @@ impl BiomonApp {
                                 };
                                 status_chip(ui, lvl, self.state.hazard.title(), title_col, t);
                                 ui.add_space(6.0);
-                                // 3-channel mini telemetry strip with clear limits
+                                // 3 visual mini-bars (Rad / CO2 / O2) readable at a glance
                                 ui.horizontal(|ui| {
-                                    mini_metric(
+                                    gauge_pill(
                                         ui,
+                                        ctx,
                                         "Rad",
                                         self.state.hazard.rad_val(),
-                                        "mSv/d",
+                                        self.state.hazard.rad_ratio(),
                                         self.state.hazard == Hazard::Radiation,
                                         t,
                                     );
-                                    ui.add_space(10.0);
-                                    mini_metric(
+                                    ui.add_space(8.0);
+                                    gauge_pill(
                                         ui,
+                                        ctx,
                                         "CO2",
                                         self.state.hazard.co2_val(),
-                                        "mmHg",
+                                        self.state.hazard.co2_ratio(),
                                         self.state.hazard == Hazard::HighCo2,
                                         t,
                                     );
-                                    ui.add_space(10.0);
-                                    mini_metric(
+                                    ui.add_space(8.0);
+                                    gauge_pill(
                                         ui,
+                                        ctx,
                                         "O2",
                                         self.state.hazard.o2(),
-                                        "sat",
+                                        self.state.hazard.o2_ratio(),
                                         self.state.hazard == Hazard::Hypoxia,
                                         t,
                                     );
                                 });
                             } else {
-                                ui.label(RichText::new("Test hazard alerts").size(t.sz(14.0)).color(t.accent_input));
+                                status_chip(ui, StatusLevel::Caution, "Test alerts", t.accent_input, t);
                                 ui.add_space(4.0);
                                 ui.label(
-                                    RichText::new(format!("Active: {}", self.state.hazard.label()))
-                                        .size(t.sz(12.5))
+                                    RichText::new(self.state.hazard.label())
+                                        .size(t.sz(13.5))
                                         .color(t.text_main),
-                                );
-                                ui.label(
-                                    RichText::new("Open to test radiation, high CO2, or low oxygen.")
-                                        .size(t.sz(11.5))
-                                        .color(t.text_muted),
                                 );
                             }
                         }
@@ -1104,39 +1178,50 @@ impl BiomonApp {
             },
         );
 
-        // Zone 3: Footer Metadata
+        // Zone 3: Minimal Footer
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(footer_l)
                     .family(FontFamily::Monospace)
-                    .size(t.sz(10.5))
+                    .size(t.sz(10.0))
                     .color(t.text_muted),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new(footer_r)
                         .family(FontFamily::Monospace)
-                        .size(t.sz(10.5))
+                        .size(t.sz(10.0))
                         .color(t.text_muted),
                 );
             });
         });
     }
 
-    fn render_detail_overlay(&mut self, ui: &mut Ui, screen_rect: Rect, panel: PanelId, t: Tokens) {
+    fn render_detail_overlay(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &egui::Context,
+        screen_rect: Rect,
+        panel: PanelId,
+        t: Tokens,
+    ) {
         let is_input = self.state.mode == Mode::Input;
         let inner = screen_rect.shrink(16.0);
-        let accent = if is_input { t.accent_input } else { t.accent_view };
+        let accent = if is_input {
+            t.accent_input
+        } else {
+            t.quad_accent(panel)
+        };
 
         let (kicker, title) = match (panel, is_input) {
-            (PanelId::Health, false) => ("01 · Health & suit", "Heart rate, hydration & ration plan"),
+            (PanelId::Health, false) => ("01 · Health & suit", "Suit vitals, body zones & ration"),
             (PanelId::Health, true) => ("01 · Edit mode", "Log meal & re-entry salt/water"),
-            (PanelId::Hub, false) => ("02 · Hub & navigation", "Range to habitat & telemetry link"),
+            (PanelId::Hub, false) => ("02 · Hub & nav", "Range to habitat & signal link"),
             (PanelId::Hub, true) => ("02 · Edit mode", "Mission phase & hub sync"),
-            (PanelId::Tech, false) => ("03 · Comms & display", "Local safety engine, offline queue & display"),
-            (PanelId::Tech, true) => ("03 · Edit mode", "Comms blackout & astronaut accessibility"),
-            (PanelId::Hazard, false) => ("04 · Hazard & env", "Radiation, cabin gas & safety actions"),
-            (PanelId::Hazard, true) => ("04 · Edit mode", "Test emergency hazard alerts"),
+            (PanelId::Tech, false) => ("03 · Comms & display", "Local safety engine & display"),
+            (PanelId::Tech, true) => ("03 · Edit mode", "Comms blackout & accessibility"),
+            (PanelId::Hazard, false) => ("04 · Hazard & env", "Radiation, cabin gas & actions"),
+            (PanelId::Hazard, true) => ("04 · Edit mode", "Test hazard alerts"),
         };
 
         ui.allocate_ui_at_rect(inner, |ui| {
@@ -1157,7 +1242,8 @@ impl BiomonApp {
                     if resp.hovered() {
                         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                     }
-                    let fill = if resp.hovered() { t.raised_hover } else { t.raised_bg };
+                    let h_t = ctx.animate_bool_with_time(Id::new("ret_hover"), resp.hovered(), t.anim_secs);
+                    let fill = lerp_color(t.raised_bg, t.raised_hover, h_t);
                     let p = ui.painter();
                     p.rect(btn_rect, 8.0, fill, Stroke::new(t.stroke_w, t.hairline_strong));
                     p.text(
@@ -1188,10 +1274,10 @@ impl BiomonApp {
                 .max_height(body_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| match panel {
-                    PanelId::Health => self.overlay_health(ui, is_input, t),
-                    PanelId::Hub => self.overlay_hub(ui, is_input, t),
-                    PanelId::Tech => self.overlay_tech(ui, is_input, t),
-                    PanelId::Hazard => self.overlay_hazard(ui, is_input, t),
+                    PanelId::Health => self.overlay_health(ui, ctx, is_input, t),
+                    PanelId::Hub => self.overlay_hub(ui, ctx, is_input, t),
+                    PanelId::Tech => self.overlay_tech(ui, ctx, is_input, t),
+                    PanelId::Hazard => self.overlay_hazard(ui, ctx, is_input, t),
                 });
 
             ui.add_space(4.0);
@@ -1206,14 +1292,14 @@ impl BiomonApp {
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("[C] Cycle mode · [1-4] Panels · [H] High-Visor contrast")
+                    RichText::new("[C] Cycle mode · [1-4] Panels · [H] High-Visor")
                         .family(FontFamily::Monospace)
                         .size(t.sz(10.0))
                         .color(t.text_muted),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
-                        RichText::new(format!("Profile: {}", self.state.a11y.summary()))
+                        RichText::new(format!("Display: {}", self.state.a11y.summary()))
                             .family(FontFamily::Monospace)
                             .size(t.sz(10.0))
                             .color(t.text_muted),
@@ -1223,7 +1309,7 @@ impl BiomonApp {
         });
     }
 
-    fn overlay_health(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+    fn overlay_health(&mut self, ui: &mut Ui, ctx: &egui::Context, is_input: bool, t: Tokens) {
         let p = self.state.phase;
         let ration = self.state.compute_ration();
         if !is_input {
@@ -1232,7 +1318,7 @@ impl BiomonApp {
                     &mut c[0],
                     "Heart rate",
                     &format!("{} bpm", self.state.live_hr),
-                    t.nominal,
+                    t.quad_health,
                     &format!("Safe {}", p.hr_range()),
                     t,
                 );
@@ -1242,14 +1328,14 @@ impl BiomonApp {
                     "Calorie deficit",
                     &format!("{} kcal", self.state.calorie_deficit),
                     t.caution,
-                    &format!("{:.1} kcal/min burn", p.kcal_rate()),
+                    &format!("{:.1} kcal/min", p.kcal_rate()),
                     t,
                 );
                 stat_card(
                     &mut c[3],
                     "Hydration loss",
                     &format!("{} mL", self.state.sweat_deficit_ml),
-                    t.accent_view,
+                    t.quad_hub,
                     &format!("Logged +{} mL", self.state.water_ml),
                     t,
                 );
@@ -1264,12 +1350,14 @@ impl BiomonApp {
             ui.columns(4, |c| {
                 for (idx, pct) in [100_u32, 50, 25, 0].iter().enumerate() {
                     let sub = match *pct {
-                        100 => "Full meal",
+                        100 => "Full",
                         0 => "Skipped",
                         _ => "Partial",
                     };
                     if glove_button(
                         &mut c[idx],
+                        ctx,
+                        ("meal_btn", idx),
                         &format!("{pct}% eaten"),
                         sub,
                         self.state.meal_eaten_pct == *pct,
@@ -1291,6 +1379,8 @@ impl BiomonApp {
             ui.columns(2, |c| {
                 if glove_button(
                     &mut c[0],
+                    ctx,
+                    "water_btn",
                     "+ 250 mL water",
                     &format!("{} / 1,150 mL", self.state.water_ml),
                     false,
@@ -1303,6 +1393,8 @@ impl BiomonApp {
                 }
                 if glove_button(
                     &mut c[1],
+                    ctx,
+                    "nacl_btn",
                     "+ 1g salt tablet",
                     &format!("{} / 9 tablets", self.state.nacl_count),
                     false,
@@ -1320,13 +1412,13 @@ impl BiomonApp {
         }
     }
 
-    fn overlay_hub(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+    fn overlay_hub(&mut self, ui: &mut Ui, ctx: &egui::Context, is_input: bool, t: Tokens) {
         let p = self.state.phase;
         if !is_input {
             ui.columns(4, |c| {
-                stat_card(&mut c[0], "Hub range", &format!("{} m", self.state.distance_m), t.accent_view, "Bearing 042° NE", t);
+                stat_card(&mut c[0], "Hub range", &format!("{} m", self.state.distance_m), t.quad_hub, "Bearing 042° NE", t);
                 stat_card(&mut c[1], "Flight phase", p.name(), t.text_main, &format!("Safe {}", p.hr_range()), t);
-                stat_card(&mut c[2], "Earth signal lag", "18m 42s", t.caution, "Suit runs locally", t);
+                stat_card(&mut c[2], "Earth lag", "18m 42s", t.caution, "Suit runs locally", t);
                 stat_card(
                     &mut c[3],
                     "Surface LAN",
@@ -1343,7 +1435,7 @@ impl BiomonApp {
             ui.add_space(4.0);
             ui.columns(4, |c| {
                 for (i, ph) in Phase::ALL.iter().enumerate() {
-                    if glove_button(&mut c[i], ph.name(), ph.hr_range(), self.state.phase == *ph, t).clicked() {
+                    if glove_button(&mut c[i], ctx, ("phase_btn", i), ph.name(), ph.hr_range(), self.state.phase == *ph, t).clicked() {
                         self.state.set_phase(*ph);
                     }
                 }
@@ -1354,6 +1446,8 @@ impl BiomonApp {
             ui.columns(2, |c| {
                 if glove_button(
                     &mut c[0],
+                    ctx,
+                    "sync_btn",
                     "Force sync to hub",
                     &format!("Send {} queued", self.state.buffered_packets),
                     false,
@@ -1364,14 +1458,14 @@ impl BiomonApp {
                     self.state.buffered_packets = 0;
                     self.state.online = true;
                 }
-                if glove_button(&mut c[1], "Set airlock waypoint", "145 m range", false, t).clicked() {
+                if glove_button(&mut c[1], ctx, "wp_btn", "Set airlock waypoint", "145 m range", false, t).clicked() {
                     self.state.distance_m = 145;
                 }
             });
         }
     }
 
-    fn overlay_tech(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+    fn overlay_tech(&mut self, ui: &mut Ui, ctx: &egui::Context, is_input: bool, t: Tokens) {
         if !is_input {
             ui.columns(4, |c| {
                 stat_card(&mut c[0], "Safety engine", "1 Hz local", t.nominal, "No Earth lag", t);
@@ -1391,7 +1485,7 @@ impl BiomonApp {
                     "Saved on suit",
                     t,
                 );
-                stat_card(&mut c[3], "Medical guide DB", "64 MB local", t.accent_view, "NASA-STD-3001", t);
+                stat_card(&mut c[3], "Medical DB", "64 MB local", t.quad_comms, "NASA-STD-3001", t);
             });
             ui.add_space(12.0);
             rag_box(
@@ -1399,7 +1493,7 @@ impl BiomonApp {
                 "Offline crater safety & display profile",
                 None,
                 &format!(
-                    "When crater walls block surface radio, your suit monitors NASA-STD-3001 thresholds locally every second and stores packets until reconnect. Active display accessibility: {}.",
+                    "When crater walls block surface radio, your suit monitors NASA-STD-3001 thresholds locally every second and stores packets until reconnect. Active display profile: {}.",
                     self.state.a11y.summary()
                 ),
                 false,
@@ -1412,6 +1506,8 @@ impl BiomonApp {
                 let hi_on = self.state.a11y.contrast == ContrastMode::HighVisor;
                 if glove_button(
                     &mut c[0],
+                    ctx,
+                    "a11y_hv",
                     "High-visor sunlight contrast [H]",
                     if hi_on { "ON" } else { "OFF" },
                     hi_on,
@@ -1427,6 +1523,8 @@ impl BiomonApp {
                 }
                 if glove_button(
                     &mut c[1],
+                    ctx,
+                    "a11y_lg",
                     "Large text size",
                     if self.state.a11y.large_text { "115%" } else { "100%" },
                     self.state.a11y.large_text,
@@ -1441,6 +1539,8 @@ impl BiomonApp {
             ui.columns(2, |c| {
                 if glove_button(
                     &mut c[0],
+                    ctx,
+                    "a11y_cb",
                     "Colorblind-safe + shape cues",
                     if self.state.a11y.colorblind_safe { "ON" } else { "OFF" },
                     self.state.a11y.colorblind_safe,
@@ -1452,6 +1552,8 @@ impl BiomonApp {
                 }
                 if glove_button(
                     &mut c[1],
+                    ctx,
+                    "a11y_gl",
                     "Extra glove button size",
                     if self.state.a11y.glove_targets { "52 px" } else { "44 px" },
                     self.state.a11y.glove_targets,
@@ -1465,7 +1567,9 @@ impl BiomonApp {
             ui.add_space(8.0);
             if glove_button(
                 ui,
-                "Reduced motion (static pulse indicator)",
+                ctx,
+                "a11y_rm",
+                "Reduced motion (static vitals)",
                 if self.state.a11y.reduced_motion { "ON" } else { "OFF" },
                 self.state.a11y.reduced_motion,
                 t,
@@ -1476,7 +1580,7 @@ impl BiomonApp {
             }
 
             ui.add_space(12.0);
-            ui.label(RichText::new("LAN blackout test & local queue").size(t.sz(12.5)).color(t.text_body));
+            ui.label(RichText::new("LAN blackout test & queue").size(t.sz(12.5)).color(t.text_body));
             ui.add_space(4.0);
             let label = if self.state.online {
                 "Simulate crater radio blackout"
@@ -1488,7 +1592,7 @@ impl BiomonApp {
             } else {
                 "Offline · buffering"
             };
-            if glove_button(ui, label, right, !self.state.online, t).clicked() {
+            if glove_button(ui, ctx, "lan_btn", label, right, !self.state.online, t).clicked() {
                 self.state.online = !self.state.online;
                 if self.state.online {
                     self.state.buffered_packets = 0;
@@ -1499,14 +1603,14 @@ impl BiomonApp {
                 ui,
                 "Queued telemetry frames",
                 &format!("{} frames", self.state.buffered_packets),
-                t.accent_view,
-                "Saves 1 frame/s offline; sends automatically on reconnect.",
+                t.quad_comms,
+                "Saves 1 frame/s offline; flushes on reconnect.",
                 t,
             );
         }
     }
 
-    fn overlay_hazard(&mut self, ui: &mut Ui, is_input: bool, t: Tokens) {
+    fn overlay_hazard(&mut self, ui: &mut Ui, ctx: &egui::Context, is_input: bool, t: Tokens) {
         let h = self.state.hazard;
         if !is_input {
             ui.columns(4, |c| {
@@ -1541,11 +1645,11 @@ impl BiomonApp {
         } else {
             ui.label(RichText::new("Select hazard scenario to test").size(t.sz(12.5)).color(t.text_body));
             ui.add_space(4.0);
-            for pair in Hazard::ALL.chunks(2) {
+            for (row, pair) in Hazard::ALL.chunks(2).enumerate() {
                 ui.columns(2, |c| {
                     for (i, hk) in pair.iter().enumerate() {
                         let sub = if *hk == Hazard::Nominal { "Clear alert" } else { "Trigger alert" };
-                        if glove_button(&mut c[i], hk.label(), sub, self.state.hazard == *hk, t).clicked() {
+                        if glove_button(&mut c[i], ctx, ("haz_btn", row * 2 + i), hk.label(), sub, self.state.hazard == *hk, t).clicked() {
                             self.state.hazard = *hk;
                         }
                     }
@@ -1558,7 +1662,7 @@ impl BiomonApp {
     }
 }
 
-// ───────────────────────── Accessible Instrument Primitives ─────────────────────────
+// ───────────────────────── Visual & Smooth Craft Primitives ─────────────────────────
 fn fit_16_by_9(bounds: Rect) -> Rect {
     let target = 16.0_f32 / 9.0_f32;
     let (w, h) = if bounds.width() / bounds.height() > target {
@@ -1567,6 +1671,12 @@ fn fit_16_by_9(bounds: Rect) -> Rect {
         (bounds.width(), bounds.width() / target)
     };
     Rect::from_center_size(bounds.center(), Vec2::new(w, h))
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| -> u8 { (x as f32 + (y as f32 - x as f32) * t).round() as u8 };
+    Color32::from_rgba_unmultiplied(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()), mix(a.a(), b.a()))
 }
 
 fn draw_status_shape(painter: &egui::Painter, center: Pos2, level: StatusLevel, color: Color32) {
@@ -1593,8 +1703,79 @@ fn status_chip(ui: &mut Ui, level: StatusLevel, label: &str, color: Color32, t: 
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
         draw_status_shape(ui.painter(), r.center(), level, color);
-        ui.label(RichText::new(label).size(t.sz(13.5)).color(color));
+        ui.label(RichText::new(label).size(t.sz(13.0)).color(color));
     });
+}
+
+fn draw_mini_spacesuit(
+    ui: &mut Ui,
+    size: f32,
+    phase: Phase,
+    hazard: Hazard,
+    pulse: f32,
+    t: Tokens,
+) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size * 1.15), Sense::hover());
+    let p = ui.painter();
+    let cx = rect.center().x;
+    let top = rect.top() + 3.0;
+
+    let helmet_col = if hazard == Hazard::Hypoxia { t.critical } else { t.quad_hub };
+    let torso_col = if hazard == Hazard::Hypoxia {
+        t.critical
+    } else if phase == Phase::ReEntry {
+        t.caution
+    } else {
+        t.quad_health
+    };
+    let pack_col = if hazard == Hazard::HighCo2 { t.caution } else { t.hairline_strong };
+    let shield_col = if hazard == Hazard::Radiation { t.critical } else { t.hairline };
+
+    // Optional radiation outer arc indicators
+    if hazard == Hazard::Radiation {
+        p.circle_stroke(rect.center(), size * 0.48, Stroke::new(1.5_f32, t.critical));
+    } else {
+        p.circle_stroke(rect.center(), size * 0.48, Stroke::new(1.0_f32, shield_col.gamma_multiply(0.35)));
+    }
+
+    // PLSS Backpack (CO2 scrubber indicator on side)
+    let pack = Rect::from_min_size(Pos2::new(cx - 11.0, top + 14.0), Vec2::new(4.0, 14.0));
+    p.rect_filled(pack, 1.5, pack_col);
+
+    // Helmet + Visor (O2 indicator)
+    let head_c = Pos2::new(cx, top + 7.5);
+    p.circle(head_c, 6.5, t.screen_bg, Stroke::new(1.5_f32, helmet_col));
+    p.rect_filled(Rect::from_center_size(Pos2::new(cx + 1.0, head_c.y), Vec2::new(6.0, 4.0)), 1.5, helmet_col);
+
+    // Torso (Suit integrity + live pulsing core)
+    let torso = Rect::from_min_size(Pos2::new(cx - 6.5, top + 15.0), Vec2::new(13.0, 15.0));
+    p.rect(torso, 3.0, torso_col.gamma_multiply(0.18), Stroke::new(1.5_f32, torso_col));
+    p.circle_filled(torso.center(), 2.2 + pulse * 0.9, torso_col);
+
+    // Arms
+    p.line_segment([Pos2::new(torso.left(), torso.top() + 2.0), Pos2::new(torso.left() - 4.5, torso.top() + 11.0)], Stroke::new(2.0_f32, torso_col));
+    p.line_segment([Pos2::new(torso.right(), torso.top() + 2.0), Pos2::new(torso.right() + 4.5, torso.top() + 11.0)], Stroke::new(2.0_f32, torso_col));
+
+    // Legs
+    p.line_segment([Pos2::new(cx - 3.0, torso.bottom()), Pos2::new(cx - 4.0, torso.bottom() + 12.0)], Stroke::new(2.2_f32, torso_col));
+    p.line_segment([Pos2::new(cx + 3.0, torso.bottom()), Pos2::new(cx + 4.0, torso.bottom() + 12.0)], Stroke::new(2.2_f32, torso_col));
+}
+
+fn draw_signal_bars(ui: &mut Ui, size: f32, online: bool, on_col: Color32, off_col: Color32, t: Tokens) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let p = ui.painter();
+    let active_bars = if online { 4 } else { 1 };
+    let col = if online { on_col } else { off_col };
+    let w = 4.5_f32;
+    let gap = 2.5_f32;
+    let start_x = rect.left() + 2.0;
+    for i in 0..4 {
+        let h = 6.0 + (i as f32) * 5.0;
+        let x = start_x + (i as f32) * (w + gap);
+        let bar = Rect::from_min_size(Pos2::new(x, rect.bottom() - 3.0 - h), Vec2::new(w, h));
+        let fill = if i < active_bars { col } else { t.hairline };
+        p.rect_filled(bar, 1.0, fill);
+    }
 }
 
 fn draw_corridor_bar(
@@ -1611,7 +1792,6 @@ fn draw_corridor_bar(
     let track = Rect::from_min_size(Pos2::new(rect.left(), rect.center().y - 2.0), Vec2::new(width, 4.0));
     p.rect_filled(track, 2.0, t.hairline);
 
-    // Safe middle corridor zone
     let safe_left = track.left() + width * 0.20;
     let safe_w = width * 0.60;
     let safe_rect = Rect::from_min_size(Pos2::new(safe_left, track.top()), Vec2::new(safe_w, 4.0));
@@ -1623,28 +1803,29 @@ fn draw_corridor_bar(
     p.circle_filled(Pos2::new(x, track.center().y), 3.5, marker_col);
 }
 
-fn mini_metric(ui: &mut Ui, name: &str, val: &str, unit: &str, alerted: bool, t: Tokens) {
+fn gauge_pill(
+    ui: &mut Ui,
+    ctx: &egui::Context,
+    name: &str,
+    val: &str,
+    target_ratio: f32,
+    alerted: bool,
+    t: Tokens,
+) {
     let col = if alerted { t.critical } else { t.text_main };
     let bar_col = if alerted { t.critical } else { t.nominal };
+    let fill_ratio = ctx.animate_value_with_time(Id::new(("haz_gauge", name)), target_ratio.clamp(0.05, 1.0), t.anim_secs);
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::new(3.0, 14.0), Sense::hover());
-            ui.painter().rect_filled(r, 1.0, bar_col);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(format!("{name} {val}"))
-                        .family(FontFamily::Monospace)
-                        .size(t.sz(11.5))
-                        .color(col),
-                );
-                ui.label(
-                    RichText::new(unit)
-                        .family(FontFamily::Monospace)
-                        .size(t.sz(9.5))
-                        .color(t.text_muted),
-                );
-            });
-        });
+        ui.label(
+            RichText::new(format!("{name} {val}"))
+                .family(FontFamily::Monospace)
+                .size(t.sz(11.0))
+                .color(col),
+        );
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(62.0, 4.0), Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, t.hairline);
+        let fill = Rect::from_min_size(rect.min, Vec2::new(rect.width() * fill_ratio, rect.height()));
+        ui.painter().rect_filled(fill, 2.0, bar_col);
     });
 }
 
@@ -1709,24 +1890,29 @@ fn rag_box(ui: &mut Ui, header: &str, headline: Option<&str>, body: &str, danger
     );
 }
 
-fn glove_button(ui: &mut Ui, left: &str, right: &str, selected: bool, t: Tokens) -> egui::Response {
-    let (bg, border, text_col) = if selected {
-        (t.card_input_hover, t.accent_input, t.accent_input)
-    } else {
-        (t.raised_bg, t.hairline_strong, t.text_main)
-    };
+fn glove_button(
+    ui: &mut Ui,
+    ctx: &egui::Context,
+    anim_key: impl std::hash::Hash,
+    left: &str,
+    right: &str,
+    selected: bool,
+    t: Tokens,
+) -> egui::Response {
     let desired = Vec2::new(ui.available_width(), t.button_h);
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    let fill = if resp.hovered() && !selected {
-        t.raised_hover
+    let h_t = ctx.animate_bool_with_time(Id::new(anim_key), resp.hovered(), t.anim_secs);
+    let (bg, border, text_col) = if selected {
+        (t.card_input_hover, t.accent_input, t.accent_input)
     } else {
-        bg
+        (lerp_color(t.raised_bg, t.raised_hover, h_t), t.hairline_strong, t.text_main)
     };
+
     let p = ui.painter();
-    p.rect(rect, 8.0, fill, Stroke::new(t.stroke_w, border));
+    p.rect(rect, 8.0, bg, Stroke::new(t.stroke_w, border));
     p.text(
         Pos2::new(rect.left() + 12.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -1815,7 +2001,24 @@ mod tests {
         assert_ne!(std_t.screen_bg, a11y_t.screen_bg);
         assert_ne!(std_t.nominal, a11y_t.nominal);
         assert_eq!(a11y_t.button_h, 52.0);
+        assert_eq!(a11y_t.anim_secs, 0.0);
         assert!(a11y_t.sz(12.0) > std_t.sz(12.0));
+    }
+
+    #[test]
+    fn each_quadrant_has_distinct_color_signature() {
+        let t = Tokens::resolve(AccessibilityConfig::default());
+        let cols = [
+            t.quad_accent(PanelId::Health),
+            t.quad_accent(PanelId::Hub),
+            t.quad_accent(PanelId::Tech),
+            t.quad_accent(PanelId::Hazard),
+        ];
+        for i in 0..cols.len() {
+            for j in (i + 1)..cols.len() {
+                assert_ne!(cols[i], cols[j]);
+            }
+        }
     }
 
     #[test]

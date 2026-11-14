@@ -13,23 +13,35 @@ dist/
 build/
 .vite/
 
+# Rust / SQLite
+target/
+**/*.rs.bk
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/hub_state.json
+
+# Unused SQL files (keep schemas embedded via include_str! in compilation)
+*.sql
+!/biomon-mobile/sql/init.sql
+!/hub-desktop/sql/init.sql
+
+# Agent Rules
+DESIGN RULES TO FOLLOW.md
+.rules
+
 # Environment & Secrets
 .env
 .env.*
 *.pem
 *.key
 
-# Logs & OS
+# Logs, OS & IDEs
 logs/
 *.log
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-
-# Rust
-target/
-
-# Local SQLite DB & State
-data/*.db
-data/hub_state.json
+.zed/

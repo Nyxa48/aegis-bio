@@ -193,7 +193,7 @@ struct App {
     c_warn: [u8; 4],
     c_danger: [u8; 4],
     fahrenheit: bool,
-    show_terminal: bool,
+    show_suit: bool,
     blink: bool,
     ui_scale: f32,
     sync_msg: String,
@@ -260,7 +260,7 @@ impl App {
             c_warn: [255, 140, 30, 255],
             c_danger: [255, 62, 62, 255],
             fahrenheit: false,
-            show_terminal: true,
+            show_suit: true,
             blink: true,
             ui_scale: 1.0,
             sync_msg: "Henüz senkronize edilmedi.".into(),
@@ -521,7 +521,7 @@ impl App {
                     "home | health | hazards | hub | settings   sekme aç",
                     "status                anlık değerler",
                     "sync                  veri setini yeniden oku",
-                    "suit                  kıyafet bölgelerini listele",
+                    "suit                  kıyafet bölgelerini listele (Sağlık sekmesinde görünür)",
                     "suit <bolge> <ok|tear|crit>   örn: suit sol_kol tear",
                     "bpm <n> | o2 <n> | rad <n>    değer ayarla",
                     "clear                 terminali temizle",
@@ -548,6 +548,7 @@ impl App {
                         (Some(i), Some(st)) => {
                             self.suit[i] = st;
                             self.sel = i;
+                            self.show_suit = true;
                             self.log(format!("[OK] {} → {}", PARTS[i].name, st.label()));
                         }
                         _ => self.log("[HATA] kullanım: suit sol_kol tear"),
@@ -796,14 +797,6 @@ impl eframe::App for App {
                 });
             });
 
-        // ── Alt: terminal ──
-        if self.show_terminal {
-            egui::TopBottomPanel::bottom("terminal")
-                .exact_height(170.0)
-                .frame(egui::Frame::none().fill(p.bg).inner_margin(egui::Margin::same(10.0)))
-                .show(ctx, |ui| self.terminal(ui, &p));
-        }
-
         // ── Sol: sekmeler ──
         egui::SidePanel::left("nav")
             .exact_width(160.0)
@@ -843,34 +836,40 @@ impl eframe::App for App {
 
 // ───────────────────────── Sayfalar ─────────────────────────
 impl App {
-    fn terminal(&mut self, ui: &mut Ui, p: &Pal) {
+    fn terminal(&mut self, ui: &mut Ui, p: &Pal, h: f32) {
         egui::Frame::none()
             .fill(p.bar_bg)
-            .stroke(Stroke::new(1.0, p.accent))
-            .rounding(12.0)
-            .inner_margin(8.0)
+            .stroke(Stroke::new(1.5, p.accent))
+            .rounding(14.0)
+            .inner_margin(12.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(">_ TERMİNAL (G/Ç)").size(12.0).strong().color(p.accent));
-                let h = (ui.available_height() - 46.0).max(30.0);
-                egui::ScrollArea::vertical().max_height(h).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-                    for l in &self.logs {
-                        let col = if l.starts_with("[HATA]") {
-                            p.danger
-                        } else if l.starts_with('>') {
-                            p.accent
-                        } else if l.starts_with("[SYNC]") {
-                            p.ok
-                        } else {
-                            p.text
-                        };
-                        ui.label(RichText::new(l).monospace().size(12.0).color(col));
-                    }
-                });
+                ui.set_min_height((h - 24.0).max(120.0));
+                ui.label(RichText::new(">_ MERKEZ TERMİNAL (G/Ç)").size(13.0).strong().color(p.accent));
+                let sh = (h - 24.0 - 30.0 - 56.0).max(40.0);
+                egui::ScrollArea::vertical()
+                    .max_height(sh)
+                    .min_scrolled_height(sh)
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for l in &self.logs {
+                            let col = if l.starts_with("[HATA]") {
+                                p.danger
+                            } else if l.starts_with('>') {
+                                p.accent
+                            } else if l.starts_with("[SYNC]") {
+                                p.ok
+                            } else {
+                                p.text
+                            };
+                            ui.label(RichText::new(l).monospace().size(13.0).color(col));
+                        }
+                    });
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut self.input)
                         .desired_width(f32::INFINITY)
-                        .font(FontId::monospace(14.0))
+                        .font(FontId::monospace(15.0))
                         .hint_text("komut: help"),
                 );
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -881,12 +880,12 @@ impl App {
             });
     }
 
-    // ───── ANA EKRAN: kalp atışı, hub pusulası, space suit izolasyonu ─────
+    // ───── ANA EKRAN: kalp atışı, hub pusulası, merkez terminal (kare alan) ─────
     fn home(&mut self, ui: &mut Ui, p: &Pal, t: f64) {
         let hh = ui.available_height();
-        ui.columns(3, |c| {
-            // Kolon 1: kalp + hub pusulası
-            let h1 = hh * 0.40;
+        ui.columns(2, |c| {
+            // Sol kolon: kalp + hub pusulası
+            let h1 = hh * 0.42;
             let r = card(&mut c[0], p, "KALP ATIŞI  (sağlık için dokun)", h1, |ui| {
                 ui.horizontal(|ui| {
                     heart_beat(ui, p, 62.0, self.bpm, t);
@@ -903,7 +902,7 @@ impl App {
             }
 
             let rel = (self.hub_bearing - self.heading).rem_euclid(360.0);
-            let dial = ((hh - h1 - 8.0) - 24.0 - 20.0 - 70.0).clamp(90.0, 170.0);
+            let dial = ((hh - h1 - 8.0) - 24.0 - 20.0 - 70.0).clamp(90.0, 190.0);
             card(&mut c[0], p, "MERKEZ (HUB) PUSULASI", hh - h1 - 8.0, |ui| {
                 ui.vertical_centered(|ui| {
                     compass(ui, p, dial, ["ÖN", "SAĞ", "ARKA", "SOL"], rel, p.accent, None);
@@ -912,8 +911,16 @@ impl App {
                 kv(ui, p, "Yön", format!("{:.0}° • {}", rel, rel_word(rel)), p.accent);
             });
 
-            // Kolon 2: space suit figürü
-            card(&mut c[1], p, "SPACE SUIT İZOLASYONU", hh, |ui| {
+            // Sağ kolon: merkez terminal (kareye yakın büyük alan)
+            self.terminal(&mut c[1], p, hh);
+        });
+    }
+
+    // ───── SAĞLIK sekmesindeki space suit bölümü ─────
+    fn suit_section(&mut self, ui: &mut Ui, p: &Pal, t: f64) {
+        let hh = 440.0;
+        ui.columns(2, |c| {
+            card(&mut c[0], p, "SPACE SUIT İZOLASYONU", hh, |ui| {
                 let avail = Vec2::new(ui.available_width(), (hh - 110.0).max(120.0));
                 self.suit_figure(ui, p, avail, t);
                 ui.horizontal(|ui| {
@@ -925,8 +932,7 @@ impl App {
                 });
             });
 
-            // Kolon 3: bölge durumu
-            card(&mut c[2], p, "BÖLGE DURUMU", hh, |ui| {
+            card(&mut c[1], p, "BÖLGE DURUMU", hh, |ui| {
                 let (txt, col) = self.suit_summary(p);
                 ui.label(RichText::new(txt).size(17.0).strong().color(col));
                 ui.add_space(2.0);
@@ -1032,6 +1038,24 @@ impl App {
 
     // ───── SAĞLIK ─────
     fn health_page(&mut self, ui: &mut Ui, p: &Pal, t: f64) {
+        // Space suit görünümü aç/kapa
+        ui.horizontal(|ui| {
+            let (lab, fill, tc) = if self.show_suit {
+                ("SPACE SUIT İZOLASYONU: AÇIK  (gizle)", p.accent, Color32::BLACK)
+            } else {
+                ("SPACE SUIT İZOLASYONU: KAPALI  (göster)", p.panel_hi, p.text)
+            };
+            let b = egui::Button::new(RichText::new(lab).strong().color(tc)).fill(fill).min_size(Vec2::new(380.0, 46.0));
+            if ui.add(b).clicked() {
+                self.show_suit = !self.show_suit;
+            }
+            let (txt, col) = self.suit_summary(p);
+            ui.label(RichText::new(txt).strong().color(col));
+        });
+        if self.show_suit {
+            self.suit_section(ui, p, t);
+        }
+
         ui.columns(3, |c| {
             // Kolon 1: oksijen + nabız
             let spo2c = lvl_low(p, self.spo2, 95.0, 90.0);
@@ -1239,7 +1263,7 @@ impl App {
                     ui.radio_value(&mut self.fahrenheit, false, "°C");
                     ui.radio_value(&mut self.fahrenheit, true, "°F");
                 });
-                ui.checkbox(&mut self.show_terminal, "Terminali göster");
+                ui.checkbox(&mut self.show_suit, "Sağlık sekmesinde space suit panelini göster");
                 ui.checkbox(&mut self.blink, "Kritik uyarıları yanıp söndür");
                 ui.horizontal(|ui| {
                     ui.label("Arayüz boyutu");

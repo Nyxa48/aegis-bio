@@ -30,5 +30,6 @@ Thumbs.db
 # Rust
 target/
 
-# Local SQLite DB
+# Local SQLite DB & State
 data/*.db
+data/hub_state.json

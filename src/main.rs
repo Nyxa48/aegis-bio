@@ -146,12 +146,12 @@ impl App {
         v.extreme_bg_color = p.bar_bg;
         v.override_text_color = Some(p.text);
         v.selection.bg_fill = p.accent;
-        v.selection.stroke = Stroke::new(1.0, p.text);
+        v.selection.stroke = Stroke::new(1.0_f32, p.text);
         v.widgets.inactive.bg_fill = p.edge;
         v.widgets.inactive.weak_bg_fill = p.panel_hi;
         v.widgets.hovered.weak_bg_fill = p.edge;
         v.widgets.active.weak_bg_fill = p.accent;
-        v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text);
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.text);
         ctx.set_visuals(v);
     }
 
@@ -271,7 +271,7 @@ fn heart(painter: &egui::Painter, c: Pos2, size: f32, color: Color32) {
 fn card(ui: &mut Ui, p: &Pal, title: &str, add: impl FnOnce(&mut Ui)) {
     egui::Frame::none()
         .fill(p.panel)
-        .stroke(Stroke::new(1.0, p.edge))
+        .stroke(Stroke::new(1.0_f32, p.edge))
         .rounding(14.0)
         .inner_margin(12.0)
         .show(ui, |ui| {
@@ -287,7 +287,7 @@ fn vbar(ui: &mut Ui, p: &Pal, frac: f32, color: Color32, size: Vec2) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 6.0, p.bar_bg);
-    painter.rect_stroke(rect, 6.0, Stroke::new(1.5, color));
+    painter.rect_stroke(rect, 6.0, Stroke::new(1.5_f32, color));
     let inner = rect.shrink(4.0);
     let h = inner.height() * frac.clamp(0.0, 1.0);
     let fill = Rect::from_min_max(Pos2::new(inner.left(), inner.bottom() - h), inner.right_bottom());
@@ -395,7 +395,7 @@ impl App {
         let resp = ui.allocate_rect(hb, Sense::click());
         let painter = ui.painter().clone();
         painter.rect_filled(hb, 18.0, if resp.hovered() { p.panel_hi } else { p.panel });
-        painter.rect_stroke(hb, 18.0, Stroke::new(2.0, p.accent));
+        painter.rect_stroke(hb, 18.0, Stroke::new(2.0_f32, p.accent));
         let phase = ((t * self.bpm as f64 / 60.0) % 1.0) as f32;
         let pulse = (1.0 - phase * 3.0).max(0.0).powi(2);
         let hs = (hb.height() * 0.5).min(110.0) * (1.0 + 0.2 * pulse);
@@ -432,7 +432,7 @@ impl App {
         let [r, g, b, _] = p.danger.to_srgba_unmultiplied();
         let fill = Color32::from_rgb((r as f32 * blink) as u8, (g as f32 * blink) as u8, (b as f32 * blink) as u8);
         painter.rect_filled(pb, 18.0, fill);
-        painter.rect_stroke(pb, 18.0, Stroke::new(3.0, Color32::from_white_alpha(200)));
+        painter.rect_stroke(pb, 18.0, Stroke::new(3.0_f32, Color32::from_white_alpha(200)));
         painter.text(
             pb.center(),
             Align2::CENTER_CENTER,
@@ -466,7 +466,7 @@ impl App {
                     Vec2::new(cw, (term_top - chips_top - 8.0).min(64.0)),
                 );
                 painter.rect_filled(r, 12.0, p.panel);
-                painter.rect_stroke(r, 12.0, Stroke::new(1.0, p.edge));
+                painter.rect_stroke(r, 12.0, Stroke::new(1.0_f32, p.edge));
                 painter.text(Pos2::new(r.center().x, r.top() + 14.0), Align2::CENTER_CENTER, *name, FontId::proportional(12.0), p.dim);
                 painter.text(Pos2::new(r.center().x, r.bottom() - 20.0), Align2::CENTER_CENTER, val, FontId::proportional(24.0), *col);
             }
@@ -480,7 +480,7 @@ impl App {
     fn terminal(&mut self, ui: &mut Ui, p: &Pal) {
         egui::Frame::none()
             .fill(p.bar_bg)
-            .stroke(Stroke::new(1.0, p.accent))
+            .stroke(Stroke::new(1.0_f32, p.accent))
             .rounding(12.0)
             .inner_margin(8.0)
             .show(ui, |ui| {
@@ -547,7 +547,7 @@ impl App {
                 .show_axes([false, true])
                 .include_y(50.0)
                 .include_y(130.0)
-                .show(ui, |pu| pu.line(Line::new(pts).color(p.accent).width(2.5)));
+                .show(ui, |pu| pu.line(Line::new(pts).color(p.accent).width(2.5_f32)));
         });
 
         // İzolasyon pivot modeli
@@ -557,11 +557,11 @@ impl App {
             let c = rect.center();
             let rad = 66.0;
             let painter = ui.painter();
-            painter.circle_stroke(c, rad, Stroke::new(2.0, p.edge));
-            painter.circle_stroke(c, rad * 0.5, Stroke::new(1.0, p.edge));
+            painter.circle_stroke(c, rad, Stroke::new(2.0_f32, p.edge));
+            painter.circle_stroke(c, rad * 0.5, Stroke::new(1.0_f32, p.edge));
             let a = self.pivot_deg.to_radians();
             let tip = Pos2::new(c.x + a.sin() * rad, c.y - a.cos() * rad);
-            painter.line_segment([c, tip], Stroke::new(4.0, p.danger));
+            painter.line_segment([c, tip], Stroke::new(4.0_f32, p.danger));
             painter.circle_filled(c, 6.0, p.accent);
             ui.spacing_mut().slider_width = ui.available_width() - 8.0;
             ui.add(egui::Slider::new(&mut self.pivot_deg, 0.0..=360.0).show_value(false).trailing_fill(true));

@@ -956,7 +956,10 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
             "BLOOD N2 R-VALUE & SANS",
             &format!("R={:.2} / {}", n2_val, crew.sans_risk),
             if n2_bad { OUTLINE_ALERT } else { INK_PRIMARY },
-            "HALDANE LIMIT R <= 1.50",
+            &format!(
+                "NA {:.0}MG | {:.0} KCAL",
+                crew.daily_nutrition.sodium_mg_total, crew.daily_nutrition.kcal_total
+            ),
             if n2_bad {
                 CardTheme::ALERT
             } else {
@@ -1130,6 +1133,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                     "N2 R-VAL",
                     "SHOCK / ORTHO",
                     "SANS",
+                    "NA / KCAL",
                     "CO2 (PPM)",
                     "RAD (uSv/h)",
                     "SUIT KPA",
@@ -1225,6 +1229,15 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                             .size(15.0)
                             .family(FontFamily::Monospace)
                             .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "{:.0} / {:.0}",
+                            cr.daily_nutrition.sodium_mg_total, cr.daily_nutrition.kcal_total
+                        ))
+                        .size(15.0)
+                        .family(FontFamily::Monospace)
+                        .color(INK_PRIMARY),
                     );
                     ui.label(
                         RichText::new(format!("{:.0}", cr.cabin_co2_ppm))
@@ -2199,6 +2212,7 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
 
     // 1. LAN Sync Telemetry & Packet Injector
     let mut sim_pkt_clicked = false;
+    let mut toggle_crew_sim_clicked = false;
     section_frame(if app.snapshot.lan_ready {
         OUTLINE_VIEW
     } else {
@@ -2228,11 +2242,40 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                         .strong()
                         .color(INK_PRIMARY),
                 )
-                .min_size(Vec2::new(280.0, 36.0))
+                .min_size(Vec2::new(260.0, 36.0))
                 .fill(BG_ACTIVE)
                 .stroke(Stroke::new(BORDER_DESKTOP, OUTLINE_INPUT));
                 if ui.add(sim_btn).clicked() {
                     sim_pkt_clicked = true;
+                }
+
+                ui.add_space(8.0);
+                let sim_toggle_btn = egui::Button::new(
+                    RichText::new(if app.crew_sim_enabled {
+                        "1HZ CREW SIM: ON"
+                    } else {
+                        "1HZ CREW SIM: PAUSED"
+                    })
+                    .size(15.0)
+                    .strong()
+                    .color(INK_PRIMARY),
+                )
+                .min_size(Vec2::new(190.0, 36.0))
+                .fill(if app.crew_sim_enabled {
+                    BG_ACTIVE
+                } else {
+                    BG_PRIMARY
+                })
+                .stroke(Stroke::new(
+                    BORDER_DESKTOP,
+                    if app.crew_sim_enabled {
+                        OUTLINE_VIEW
+                    } else {
+                        OUTLINE_INPUT
+                    },
+                ));
+                if ui.add(sim_toggle_btn).clicked() {
+                    toggle_crew_sim_clicked = true;
                 }
             });
         });
@@ -2284,10 +2327,29 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
     if sim_pkt_clicked {
         app.simulate_inbound_biomon_packet();
     }
+    if toggle_crew_sim_clicked {
+        app.toggle_crew_sim();
+    }
 
     ui.add_space(12.0);
 
     // 2. ISS Space Food Catalog Table
+    let mut logged_food_id: Option<String> = None;
+    let selected_crew_summary = app
+        .snapshot
+        .crew_summaries
+        .get(app.selected_crew_idx)
+        .map(|c| {
+            format!(
+                "ACTIVE CREW: {} ({:.0} KCAL | {:.0}MG NA | {:.0} ML)",
+                c.member.astronaut_id,
+                c.daily_nutrition.kcal_total,
+                c.daily_nutrition.sodium_mg_total,
+                c.daily_nutrition.fluid_ml_total
+            )
+        })
+        .unwrap_or_else(|| "ACTIVE CREW: AST-01".to_string());
+
     section_frame(OUTLINE_VIEW).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -2299,6 +2361,15 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                     .strong()
                     .color(INK_PRIMARY),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(&selected_crew_summary)
+                        .size(15.0)
+                        .family(FontFamily::Monospace)
+                        .strong()
+                        .color(INK_PRIMARY),
+                );
+            });
         });
         ui.add_space(8.0);
 
@@ -2318,6 +2389,7 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                     "VIT D3 (IU)",
                     "FLUID (ML)",
                     "LOW NA",
+                    "LOG MEAL",
                 ] {
                     ui.label(RichText::new(hdr).size(15.0).strong().color(INK_PRIMARY));
                 }
@@ -2386,10 +2458,26 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                             OUTLINE_INPUT
                         }),
                     );
+                    let log_btn = egui::Button::new(
+                        RichText::new("LOG 100%")
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .strong()
+                            .color(INK_PRIMARY),
+                    )
+                    .fill(BG_ACTIVE)
+                    .stroke(Stroke::new(2.0, OUTLINE_INPUT));
+                    if ui.add(log_btn).clicked() {
+                        logged_food_id = Some(item.food_id.clone());
+                    }
                     ui.end_row();
                 }
             });
     });
+
+    if let Some(food_id) = logged_food_id {
+        app.log_quick_meal_for_selected_crew(&food_id, 100);
+    }
 
     ui.add_space(12.0);
 

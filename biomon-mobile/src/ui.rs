@@ -668,13 +668,19 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 INK_PRIMARY,
             ),
             (
-                "SWEAT / FLUID IN",
+                "SWEAT / FLUID BAL",
                 format!(
-                    "{:.0} ML/H / {:.0} ML",
-                    snap.sweat_ml_per_sec * 3600.0,
+                    "{:.0} ML / {:.0} ML",
+                    snap.daily_physio.sweat_loss_ml_total,
                     snap.daily_nutrition.fluid_ml_total
                 ),
-                INK_PRIMARY,
+                if (snap.daily_physio.sweat_loss_ml_total - snap.daily_nutrition.fluid_ml_total)
+                    > 1500.0
+                {
+                    OUTLINE_ALERT
+                } else {
+                    INK_PRIMARY
+                },
             ),
             (
                 "OSTEO / ORTHO",
@@ -744,10 +750,11 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 ui_components::stat_card(
                     &mut cols[0],
                     nut_h,
-                    "SOL NUTRITION (KCAL / NA / CA)",
+                    "SOL NUTRITION (IN / BURN / NA / CA)",
                     &format!(
-                        "{:.0} KCAL | {:.0}MG NA | {:.0}MG CA",
+                        "{:.0}/{:.0} KCAL | {:.0} NA | {:.0} CA",
                         snap.daily_nutrition.kcal_total,
+                        snap.daily_physio.kcal_burned_total,
                         snap.daily_nutrition.sodium_mg_total,
                         snap.daily_nutrition.calcium_mg_total
                     ),
@@ -784,21 +791,25 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             });
         });
     } else {
-        // INPUT MODE: Glove-friendly ISS Food Cache selector + Meal % + Log Meal / Hydration
+        // INPUT MODE: Glove-friendly ISS Food Cache selector + Meal % + Log Meal / Hydration / Exercise
         let avail_w = ui.available_width();
         let avail_h = ui.available_height();
         let narrow = avail_w < 540.0;
-        let gap = (avail_h * 0.022).clamp(4.0, 12.0);
-        let hdr_sz = (avail_h * 0.045).min(avail_w * 0.032).clamp(12.0, 26.0);
-        let body_h = (avail_h - hdr_sz - gap * 3.5).max(160.0);
-        let btn_h = (body_h / if narrow { 5.0 } else { 3.0 }).max(48.0);
-
+        let gap = (avail_h * 0.018).clamp(4.0, 10.0);
+        let hdr_sz = (avail_h * 0.042).min(avail_w * 0.030).clamp(11.0, 24.0);
         let food_count = app.snapshot.food_cache.len();
         let selected_idx = app.selected_food_idx.min(food_count.saturating_sub(1));
 
+        let food_cols = if narrow { 2 } else { 3 };
+        let food_rows = food_count.max(1).div_ceil(food_cols);
+        let portion_rows = if narrow { 2 } else { 1 };
+        let total_rows = (food_rows + portion_rows + 2) as f32;
+        let body_h = (avail_h - hdr_sz - gap * (total_rows + 1.0)).max(160.0);
+        let btn_h = (body_h / total_rows).clamp(38.0, 110.0);
+
         ui.label(
             egui::RichText::new(format!(
-                "ISS RATION & HYDRATION LOG  —  {}",
+                "ISS RATION, EXERCISE & HYDRATION  —  {}",
                 app.status_banner
             ))
             .size(hdr_sz)
@@ -822,56 +833,28 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 (
                     idx,
                     format!("{} {}", f.food_id, short_name),
-                    format!("{:.0}KCAL", f.kcal),
+                    format!("{:.0}K|{:.0}NA", f.kcal, f.sodium_mg),
                 )
             })
             .collect();
 
-        if narrow {
-            for r in 0..2 {
-                ui.columns(2, |cols| {
-                    for c in 0..2 {
-                        let i = r * 2 + c;
-                        if let Some((idx, left, right)) = foods.get(i) {
-                            let w = cols[c].available_width();
-                            if ui_components::touch_button(
-                                &mut cols[c],
-                                &ctx,
-                                ("food_select", *idx),
-                                Vec2::new(w, btn_h),
-                                left,
-                                right,
-                                selected_idx == *idx,
-                                CardTheme::INPUT,
-                            )
-                            .clicked()
-                            {
-                                app.selected_food_idx = *idx;
-                            }
-                        }
-                    }
-                });
-                ui.add_space(gap);
-            }
-        } else {
-            ui.columns(4, |cols| {
-                for (idx, left, right) in &foods {
-                    if let Some(col) = cols.get_mut(*idx) {
-                        let w = col.available_width();
-                        if ui_components::touch_button(
-                            col,
-                            &ctx,
-                            ("food_select", *idx),
-                            Vec2::new(w, btn_h),
-                            left,
-                            right,
-                            selected_idx == *idx,
-                            CardTheme::INPUT,
-                        )
-                        .clicked()
-                        {
-                            app.selected_food_idx = *idx;
-                        }
+        for chunk in foods.chunks(food_cols) {
+            ui.columns(food_cols, |cols| {
+                for (c, (idx, left, right)) in chunk.iter().enumerate() {
+                    let w = cols[c].available_width();
+                    if ui_components::touch_button(
+                        &mut cols[c],
+                        &ctx,
+                        ("food_select", *idx),
+                        Vec2::new(w, btn_h),
+                        left,
+                        right,
+                        selected_idx == *idx,
+                        CardTheme::INPUT,
+                    )
+                    .clicked()
+                    {
+                        app.selected_food_idx = *idx;
                     }
                 }
             });
@@ -929,97 +912,107 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui.add_space(gap);
         }
 
-        // Action commit buttons + live nutrition totals card
-        if narrow {
-            ui.columns(2, |cols| {
-                let w0 = cols[0].available_width();
-                if ui_components::touch_button(
-                    &mut cols[0],
-                    &ctx,
-                    "commit_meal_log",
-                    Vec2::new(w0, btn_h),
-                    "LOG MEAL",
-                    &format!("{}%", app.selected_meal_pct),
-                    false,
-                    CardTheme::INPUT,
-                )
-                .clicked()
-                {
-                    app.log_selected_meal();
-                }
+        // Action commit buttons: Meal + Hydration Pouch + Exercise
+        ui.columns(3, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "commit_meal_log",
+                Vec2::new(w0, btn_h),
+                if narrow { "LOG MEAL" } else { "LOG SELECTED MEAL" },
+                &format!("{}%", app.selected_meal_pct),
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.log_selected_meal();
+            }
 
-                let w1 = cols[1].available_width();
-                if ui_components::touch_button(
-                    &mut cols[1],
-                    &ctx,
-                    "commit_fluid_log",
-                    Vec2::new(w1, btn_h),
-                    "+250ML POUCH",
-                    "FLUID",
-                    false,
-                    CardTheme::INPUT,
-                )
-                .clicked()
-                {
-                    app.log_hydration_pouch();
-                }
-            });
-            ui.add_space(gap);
+            let w1 = cols[1].available_width();
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "commit_fluid_log",
+                Vec2::new(w1, btn_h),
+                "+250ML POUCH",
+                "FLUID",
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.log_hydration_pouch();
+            }
+
+            let w2 = cols[2].available_width();
+            if ui_components::touch_button(
+                &mut cols[2],
+                &ctx,
+                "commit_exercise_log",
+                Vec2::new(w2, btn_h),
+                "+15M EXERCISE",
+                "ARED",
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.log_exercise_session("ARED-15M", "15M ARED RESISTANCE");
+            }
+        });
+        ui.add_space(gap);
+
+        let totals_txt = format!(
+            "{:.0}/{:.0} KCAL | {:.0}MG NA | {:.0} ML",
+            app.snapshot.daily_nutrition.kcal_total,
+            app.snapshot.daily_physio.kcal_burned_total,
+            app.snapshot.daily_nutrition.sodium_mg_total,
+            app.snapshot.daily_nutrition.fluid_ml_total
+        );
+        let recent_txt = if app.snapshot.recent_inputs.is_empty() {
+            "NO LOGS IN WAL".to_string()
+        } else {
+            app.snapshot
+                .recent_inputs
+                .iter()
+                .take(2)
+                .map(|inp| {
+                    format!(
+                        "{} ({}%)",
+                        inp.reference_code.as_deref().unwrap_or(&inp.input_type),
+                        inp.consumption_pct.unwrap_or(100)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+
+        if narrow {
             ui_components::stat_card(
                 ui,
                 btn_h,
-                "TODAY INTAKE TOTALS",
-                &format!(
-                    "{:.0} KCAL | {:.0} ML",
-                    app.snapshot.daily_nutrition.kcal_total,
-                    app.snapshot.daily_nutrition.fluid_ml_total
-                ),
+                "IN / BURN / SODIUM / FLUID",
+                &totals_txt,
                 INK_PRIMARY,
                 CardTheme::VIEW,
             );
         } else {
-            ui.columns(3, |cols| {
-                let w0 = cols[0].available_width();
-                if ui_components::touch_button(
-                    &mut cols[0],
-                    &ctx,
-                    "commit_meal_log",
-                    Vec2::new(w0, btn_h),
-                    "LOG SELECTED MEAL",
-                    &format!("{}%", app.selected_meal_pct),
-                    false,
-                    CardTheme::INPUT,
-                )
-                .clicked()
-                {
-                    app.log_selected_meal();
-                }
-
-                let w1 = cols[1].available_width();
-                if ui_components::touch_button(
-                    &mut cols[1],
-                    &ctx,
-                    "commit_fluid_log",
-                    Vec2::new(w1, btn_h),
-                    "LOG +250ML POUCH",
-                    "FLUID",
-                    false,
-                    CardTheme::INPUT,
-                )
-                .clicked()
-                {
-                    app.log_hydration_pouch();
-                }
-
+            ui.columns(2, |cols| {
                 ui_components::stat_card(
-                    &mut cols[2],
+                    &mut cols[0],
                     btn_h,
-                    "TODAY INTAKE TOTALS",
-                    &format!(
-                        "{:.0} KCAL | {:.0} ML",
-                        app.snapshot.daily_nutrition.kcal_total,
-                        app.snapshot.daily_nutrition.fluid_ml_total
-                    ),
+                    "TODAY INTAKE / BURN / SODIUM / FLUID",
+                    &totals_txt,
+                    INK_PRIMARY,
+                    CardTheme::VIEW,
+                );
+                ui_components::stat_card(
+                    &mut cols[1],
+                    btn_h,
+                    "RECENT CREW LOGS (SQLITE WAL)",
+                    &recent_txt,
                     INK_PRIMARY,
                     CardTheme::VIEW,
                 );
@@ -1363,7 +1356,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
     let narrow = avail_w < 540.0;
     let gap = (avail_h * 0.022).clamp(4.0, 12.0);
     let rows_total = if narrow {
-        if app.mode == AppMode::ViewMode { 4.0 } else { 5.0 }
+        if app.mode == AppMode::ViewMode { 4.0 } else { 6.0 }
     } else {
         3.0
     };
@@ -1477,7 +1470,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             );
         });
     } else if narrow {
-        // Row 3 (narrow): 2 buttons + full-width stat card
+        // Row 3 (narrow): 2 buttons + sim controls + stat card
         ui.columns(2, |cols| {
             let w0 = cols[0].available_width();
             if ui_components::touch_button(
@@ -1496,9 +1489,11 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             }
 
             let w1 = cols[1].available_width();
-            let toggle_lbl = match app.snapshot.comms_state {
-                ConnectionState::Online => "BLACKOUT",
-                ConnectionState::Offline => "RESTORE LAN",
+            let manual_blackout = app.lan_client.is_manual_blackout();
+            let toggle_lbl = if manual_blackout {
+                "RESTORE LAN"
+            } else {
+                "BLACKOUT"
             };
             if ui_components::touch_button(
                 &mut cols[1],
@@ -1507,7 +1502,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
                 Vec2::new(w1, row_h),
                 toggle_lbl,
                 "",
-                app.snapshot.comms_state == ConnectionState::Offline,
+                manual_blackout,
                 CardTheme::INPUT,
             )
             .clicked()
@@ -1516,6 +1511,40 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
                 app.snapshot.comms_state = new_state;
                 app.snapshot.recompute_derived();
                 app.status_banner = format!("LAN STATE: {}", new_state.label());
+            }
+        });
+        ui.add_space(gap);
+        ui.columns(2, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "comms_sim_scenario_btn",
+                Vec2::new(w0, row_h),
+                "SIM SCENARIO",
+                app.sim.scenario.label(),
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.cycle_sim_scenario();
+            }
+
+            let w1 = cols[1].available_width();
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "comms_sim_toggle_btn",
+                Vec2::new(w1, row_h),
+                "1HZ SIM",
+                if app.sim.enabled { "ON" } else { "PAUSED" },
+                app.sim.enabled,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.toggle_sim_enabled();
             }
         });
         ui.add_space(gap);
@@ -1528,15 +1557,15 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             theme,
         );
     } else {
-        // Row 3: Interactive Sync / Link Test buttons in InputMode
-        ui.columns(3, |cols| {
+        // Row 3: Interactive Sync / Link Test / Sim controls in InputMode
+        ui.columns(4, |cols| {
             let w0 = cols[0].available_width();
             if ui_components::touch_button(
                 &mut cols[0],
                 &ctx,
                 "comms_flush_btn",
                 Vec2::new(w0, row_h),
-                "FLUSH & SYNC QUEUE",
+                "FLUSH & SYNC",
                 &format!("{} REC", app.snapshot.unsynced.total()),
                 false,
                 CardTheme::INPUT,
@@ -1547,9 +1576,11 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             }
 
             let w1 = cols[1].available_width();
-            let toggle_lbl = match app.snapshot.comms_state {
-                ConnectionState::Online => "SIMULATE BLACKOUT",
-                ConnectionState::Offline => "RESTORE LAN LINK",
+            let manual_blackout = app.lan_client.is_manual_blackout();
+            let toggle_lbl = if manual_blackout {
+                "RESTORE LAN LINK"
+            } else {
+                "SIMULATE BLACKOUT"
             };
             if ui_components::touch_button(
                 &mut cols[1],
@@ -1558,7 +1589,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
                 Vec2::new(w1, row_h),
                 toggle_lbl,
                 "",
-                app.snapshot.comms_state == ConnectionState::Offline,
+                manual_blackout,
                 CardTheme::INPUT,
             )
             .clicked()
@@ -1569,8 +1600,24 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
                 app.status_banner = format!("LAN STATE: {}", new_state.label());
             }
 
-            ui_components::stat_card(
+            let w2 = cols[2].available_width();
+            if ui_components::touch_button(
                 &mut cols[2],
+                &ctx,
+                "comms_sim_toggle_btn",
+                Vec2::new(w2, row_h),
+                if app.sim.enabled { "1HZ SIM: ON" } else { "1HZ SIM: OFF" },
+                app.sim.scenario.label(),
+                app.sim.enabled,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.toggle_sim_enabled();
+            }
+
+            ui_components::stat_card(
+                &mut cols[3],
                 row_h,
                 "FRAMES TRANSMITTED",
                 &format!("{} PKTS", app.lan_client.frames_sent()),
@@ -1633,8 +1680,8 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
     let card_rows = match (app.mode == AppMode::ViewMode, narrow) {
         (true, true) => 3.0,
         (true, false) => 2.0,
-        (false, true) => 5.0,
-        (false, false) => 3.0,
+        (false, true) => 6.0,
+        (false, false) => 4.0,
     };
     let rows_total = card_rows + 0.85;
     let row_h = ((avail_h - gap * card_rows) / rows_total).max(42.0);
@@ -1843,6 +1890,41 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 }
             });
         }
+
+        ui.add_space(gap);
+        ui.columns(2, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "hazard_sim_scenario_btn",
+                Vec2::new(w0, row_h),
+                "SIM SCENARIO",
+                app.sim.scenario.label(),
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.cycle_sim_scenario();
+            }
+
+            let w1 = cols[1].available_width();
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "hazard_sim_toggle_btn",
+                Vec2::new(w1, row_h),
+                "1HZ BIO SIM",
+                if app.sim.enabled { "RUNNING" } else { "PAUSED" },
+                app.sim.enabled,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.toggle_sim_enabled();
+            }
+        });
 
         ui.add_space(gap);
         render_directive_card(ui, dir_h, &proto.immediate_action, theme, is_alert);

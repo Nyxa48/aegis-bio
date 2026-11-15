@@ -26,18 +26,18 @@ impl AppMode {
 
     pub fn cycle_badge_label(self) -> &'static str {
         match self {
-            AppMode::ViewMode => "VIEW",
-            AppMode::InputMode => "INPUT",
+            AppMode::ViewMode => "GÖRÜNTÜLE",
+            AppMode::InputMode => "VERİ GİRİŞİ",
         }
     }
 
     pub fn detail_mode_badge(self, is_alert: bool) -> &'static str {
         if is_alert {
-            "CRITICAL OVERRIDE ACTIVE"
+            "KRİTİK UYARI ETKİN"
         } else {
             match self {
-                AppMode::ViewMode => "VIEW MODE — LIVE TELEMETRY",
-                AppMode::InputMode => "INPUT MODE — GLOVE CONTROLS",
+                AppMode::ViewMode => "İZLEME MODU — TELEMETRİ",
+                AppMode::InputMode => "GİRİŞ MODU — ELDİVEN KONTROLÜ",
             }
         }
     }
@@ -54,10 +54,10 @@ pub enum QuadrantId {
 impl QuadrantId {
     pub fn title(self) -> &'static str {
         match self {
-            QuadrantId::HealthAndSuit => "HEALTH & SUIT",
-            QuadrantId::HubAndNav => "HUB & NAV",
-            QuadrantId::CommsAndDisplay => "COMMS",
-            QuadrantId::HazardAndEnv => "HAZARD & ENV",
+            QuadrantId::HealthAndSuit => "BİYOMETRİ",
+            QuadrantId::HubAndNav => "KONUM",
+            QuadrantId::CommsAndDisplay => "BAĞLANTI",
+            QuadrantId::HazardAndEnv => "KABİN ORTAMI",
         }
     }
 }

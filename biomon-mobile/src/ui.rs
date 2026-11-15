@@ -22,7 +22,10 @@ pub fn apply_mandated_visuals(ctx: &egui::Context) {
     visuals.panel_fill = BG_PRIMARY;
     visuals.window_fill = BG_PRIMARY;
     visuals.extreme_bg_color = BG_PRIMARY;
-    visuals.faint_bg_color = Color32::from_rgb(232, 232, 218);
+    visuals.faint_bg_color = palette::TRACK_BG;
+    visuals.hyperlink_color = OUTLINE_VIEW;
+    visuals.selection.bg_fill = BG_ACTIVE;
+    visuals.selection.stroke = Stroke::new(1.0, INK_PRIMARY);
     visuals.override_text_color = Some(INK_PRIMARY);
     visuals.window_shadow = Shadow::NONE;
     visuals.popup_shadow = Shadow::NONE;
@@ -55,7 +58,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut BiomonApp) {
     ui.ctx().request_repaint();
 
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(BG_PRIMARY))
+        .frame(egui::Frame::NONE.fill(palette::BG_OUTER))
         .show(ui, |ui| match app.screen {
             Screen::MainHud => render_main_hud(ui, app),
             Screen::Detail(quadrant) => render_detail_screen(ui, app, quadrant),
@@ -75,7 +78,12 @@ fn quadrant_border(mode: AppMode, is_alert: bool, time_sec: f64) -> (Color32, f3
         let width = BORDER_NOMINAL + (BORDER_ALERT - BORDER_NOMINAL) * pulse;
         (OUTLINE_ALERT, width.max(BORDER_ALERT - 0.5))
     } else {
-        (mode_outline_color(mode), BORDER_NOMINAL)
+        let border = if mode == AppMode::InputMode {
+            OUTLINE_INPUT
+        } else {
+            palette::BORDER_VIEW
+        };
+        (border, BORDER_NOMINAL)
     }
 }
 
@@ -85,7 +93,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     let painter = ui.painter_at(screen_rect);
     let time_sec = ui.input(|i| i.time);
 
-    painter.rect_filled(screen_rect, CornerRadius::ZERO, BG_PRIMARY);
+    painter.rect_filled(screen_rect, CornerRadius::ZERO, palette::BG_OUTER);
 
     let center = screen_rect.center();
     let circle_radius = (screen_rect.height().min(screen_rect.width()) * 0.19).clamp(95.0, 145.0);
@@ -160,7 +168,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     painter.text(
         Pos2::new(tl_rect.min.x + pad_x, tl_rect.min.y + pad_y),
         Align2::LEFT_TOP,
-        "HEALTH & SUIT",
+        "BİYOMETRİ",
         FontId::new(32.0, FontFamily::Proportional),
         INK_PRIMARY,
     );
@@ -192,7 +200,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(tl_rect.min.x + pad_x, row2_y),
         Align2::LEFT_TOP,
         format!(
-            "SBP {:.0}  |  SPO2 {:.0}%  |  {:.1} KPA",
+            "SKB {:.0}  |  SpO₂ {:.0}%  |  {:.1} kPa",
             snap.sbp_mmhg, snap.spo2_pct, suit_p
         ),
         FontId::new(28.0, FontFamily::Monospace),
@@ -206,7 +214,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(droplet_c.x + 24.0, row3_y),
         Align2::LEFT_TOP,
         format!(
-            "{:.0} ML/H  |  SI {:.2} {}",
+            "{:.0} mL/sa  |  Şİ {:.2} {}",
             snap.sweat_ml_per_sec * 3600.0,
             snap.shock_index,
             snap.orthostatic_risk
@@ -297,7 +305,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     painter.text(
         Pos2::new(tr_right, tr_top),
         Align2::RIGHT_TOP,
-        "HUB & NAV",
+        "KONUM",
         FontId::new(32.0, FontFamily::Proportional),
         INK_PRIMARY,
     );
@@ -346,13 +354,13 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     let comms_color = if comms_alert {
         OUTLINE_ALERT
     } else {
-        INK_PRIMARY
+        palette::NOMINAL
     };
 
     painter.text(
         Pos2::new(bl_left, bl_top),
         Align2::LEFT_TOP,
-        "COMMS",
+        "BAĞLANTI",
         FontId::new(32.0, FontFamily::Proportional),
         INK_PRIMARY,
     );
@@ -361,7 +369,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(bl_left, bl_top + (q_h * 0.16).clamp(44.0, 56.0)),
         Align2::LEFT_TOP,
         format!(
-            "DELAY {:04.1}M  |  {:.2} AU",
+            "TEK YÖN {:.1}dk | {:.2}AU",
             snap.one_way_light_min, snap.earth_mars_au
         ),
         FontId::new(28.0, FontFamily::Monospace),
@@ -372,7 +380,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(bl_left, bl_top + (q_h * 0.30).clamp(84.0, 102.0)),
         Align2::LEFT_TOP,
         format!(
-            "QUEUE {}  |  TX {}",
+            "BEKLEYEN {} | İLETİLEN {}",
             snap.unsynced.total(),
             app.lan_client.frames_sent()
         ),
@@ -411,9 +419,9 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     let hazard_color = if hazard_alert {
         OUTLINE_ALERT
     } else {
-        INK_PRIMARY
+        palette::NOMINAL
     };
-    let hazard_status = if hazard_alert { "ALERT" } else { "SAFE" };
+    let hazard_status = if hazard_alert { "UYARI" } else { "OLAĞAN" };
 
     icons::draw_hazard_icon(
         &painter,
@@ -424,7 +432,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     painter.text(
         Pos2::new(br_right - 46.0, br_top),
         Align2::RIGHT_TOP,
-        "HAZARD & ENV",
+        "KABİN ORTAMI",
         FontId::new(32.0, FontFamily::Proportional),
         INK_PRIMARY,
     );
@@ -437,7 +445,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     painter.text(
         Pos2::new(br_right, br_top + (q_h * 0.16).clamp(44.0, 56.0)),
         Align2::RIGHT_TOP,
-        format!("CO2 {:.0} PPM  |  SANS {}", snap.cabin_co2_ppm, sans_label),
+        format!("CO₂ {:.0} ppm | SANS {}", snap.cabin_co2_ppm, sans_label),
         FontId::new(28.0, FontFamily::Monospace),
         INK_PRIMARY,
     );
@@ -454,7 +462,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(br_right, br_bottom),
         Align2::RIGHT_BOTTOM,
         format!(
-            "O2 {:.1}%  |  {:.2} USV/H",
+            "O₂ {:.1}% | {:.2} µSv/sa",
             snap.cabin_o2_pct.unwrap_or(20.9),
             snap.radiation_usv_hr
         ),
@@ -478,7 +486,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     painter.text(
         Pos2::new(center.x, center.y - 24.0),
         Align2::CENTER_CENTER,
-        "CYCLE",
+        "KONTROL",
         FontId::new(34.0, FontFamily::Proportional),
         INK_PRIMARY,
     );
@@ -486,7 +494,10 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(center.x, center.y + 24.0),
         Align2::CENTER_CENTER,
         app.mode.cycle_badge_label(),
-        FontId::new(40.0, FontFamily::Proportional),
+        FontId::new(
+            (circle_radius * 0.24).clamp(26.0, 34.0),
+            FontFamily::Proportional,
+        ),
         INK_PRIMARY,
     );
 }
@@ -599,7 +610,7 @@ fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: Quadra
                     &ctx,
                     ("detail_back_btn", quadrant as u8),
                     Vec2::new(210.0, 100.0),
-                    "BACK TO HUD",
+                    "ANA EKRAN",
                     "",
                     false,
                     theme,
@@ -612,8 +623,8 @@ fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: Quadra
                 ui.add_space(10.0);
 
                 let mode_btn_lbl = match app.mode {
-                    AppMode::ViewMode => "MODE: VIEW",
-                    AppMode::InputMode => "MODE: INPUT",
+                    AppMode::ViewMode => "MOD: İZLEME",
+                    AppMode::InputMode => "MOD: GİRİŞ",
                 };
                 if ui_components::touch_button(
                     ui,
@@ -654,7 +665,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui_components::stat_card(
                 &mut cols[0],
                 116.0,
-                "HEART RATE",
+                "NABIZ",
                 &format!("{:.0} BPM", snap.hr_bpm),
                 val_col,
                 theme,
@@ -662,7 +673,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui_components::stat_card(
                 &mut cols[1],
                 116.0,
-                "CUFF SBP / RESP",
+                "SKB / SOLUNUM",
                 &format!("{:.0} / {:.0}", snap.sbp_mmhg, snap.resp_brpm),
                 INK_PRIMARY,
                 theme,
@@ -670,7 +681,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui_components::stat_card(
                 &mut cols[2],
                 116.0,
-                "SPO2 / TISSUE O2",
+                "SpO₂ / DOKU O₂",
                 &format!(
                     "{:.0}% / {:.0}%",
                     snap.spo2_pct,
@@ -700,7 +711,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui_components::stat_card(
                 &mut cols[0],
                 116.0,
-                "SUIT P / HUMID",
+                "GİYSİ BASINÇ / NEM",
                 &format!(
                     "{:.1} KPA / {:.0}%",
                     snap.suit_pressure_kpa.unwrap_or(29.6),
@@ -724,7 +735,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui_components::stat_card(
                 &mut cols[2],
                 116.0,
-                "SWEAT / FLUID IN",
+                "TERLEME / SIVI ALIMI",
                 &format!(
                     "{:.0} ML/H / {:.0} ML",
                     snap.sweat_ml_per_sec * 3600.0,
@@ -919,7 +930,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 &ctx,
                 "commit_meal_log",
                 Vec2::new(w0, 118.0),
-                "LOG SELECTED MEAL",
+                "ÖĞÜNÜ KAYDET",
                 &format!("{}%", app.selected_meal_pct),
                 false,
                 CardTheme::INPUT,
@@ -935,8 +946,8 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 &ctx,
                 "commit_fluid_log",
                 Vec2::new(w1, 118.0),
-                "LOG +250ML POUCH",
-                "FLUID",
+                "+250 mL KAYDET",
+                "SIVI",
                 false,
                 CardTheme::INPUT,
             )
@@ -948,7 +959,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             ui_components::stat_card(
                 &mut cols[2],
                 118.0,
-                "TODAY INTAKE TOTALS",
+                "GÜNLÜK TOPLAM",
                 &format!(
                     "{:.0} KCAL | {:.0} ML",
                     app.snapshot.daily_nutrition.kcal_total,
@@ -970,7 +981,7 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
         ui_components::stat_card(
             &mut cols[0],
             118.0,
-            "HABITAT RANGE",
+            "ÜS UZAKLIĞI",
             &format!("{} M", app.snapshot.hub_distance_m),
             val_col,
             theme,
@@ -978,7 +989,7 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
         ui_components::stat_card(
             &mut cols[1],
             118.0,
-            "HEADING / CARDINAL",
+            "AÇI / YÖN",
             &format!(
                 "{:03.0}° {}",
                 app.snapshot.heading_deg,
@@ -1032,7 +1043,7 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
                     ui_components::stat_card(
                         ui,
                         104.0,
-                        "CREW PROFILE",
+                        "EKİP PROFİLİ",
                         &format!(
                             "{} ({:.0}KG {:.0}CM)",
                             app.snapshot.callsign, app.snapshot.weight_kg, app.snapshot.height_cm
@@ -1196,7 +1207,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         ui_components::stat_card(
             &mut cols[0],
             118.0,
-            "SURFACE LAN LINK",
+            "YEREL AĞ BAĞLANTISI",
             app.snapshot.comms_state.label(),
             val_col,
             theme,
@@ -1204,7 +1215,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         ui_components::stat_card(
             &mut cols[1],
             118.0,
-            "HUB ENDPOINT",
+            "ÜS ADRESİ",
             app.lan_client.target_hub_addr(),
             INK_PRIMARY,
             theme,
@@ -1212,7 +1223,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         ui_components::stat_card(
             &mut cols[2],
             118.0,
-            "UNSYNCED RECORDS",
+            "BEKLEYEN KAYITLAR",
             &format!(
                 "{} TOTAL ({} INP)",
                 app.snapshot.unsynced.total(),
@@ -1224,7 +1235,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         ui_components::stat_card(
             &mut cols[3],
             118.0,
-            "ONE-WAY LIGHT DELAY",
+            "TEK YÖN GECİKME",
             &format!("{:04.1} MIN", app.snapshot.one_way_light_min),
             INK_PRIMARY,
             theme,
@@ -1292,7 +1303,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             &ctx,
             "comms_flush_btn",
             Vec2::new(w0, 118.0),
-            "FLUSH & SYNC QUEUE",
+            "KUYRUĞU EŞİTLE",
             &format!("{} REC", app.snapshot.unsynced.total()),
             false,
             CardTheme::INPUT,
@@ -1304,8 +1315,8 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
 
         let w1 = cols[1].available_width();
         let toggle_lbl = match app.snapshot.comms_state {
-            ConnectionState::Online => "SIMULATE BLACKOUT",
-            ConnectionState::Offline => "RESTORE LAN LINK",
+            ConnectionState::Online => "KESİNTİYİ DENE",
+            ConnectionState::Offline => "BAĞLANTIYI AÇ",
         };
         if ui_components::touch_button(
             &mut cols[1],
@@ -1328,7 +1339,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         ui_components::stat_card(
             &mut cols[2],
             118.0,
-            "FRAMES TRANSMITTED",
+            "İLETİLEN PAKETLER",
             &format!("{} PKTS", app.lan_client.frames_sent()),
             INK_PRIMARY,
             theme,
@@ -1345,7 +1356,7 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
         ui_components::stat_card(
             &mut cols[0],
             114.0,
-            "RADIATION FLUX",
+            "RADYASYON DOZ HIZI",
             &format!("{:.2} USV/H", app.snapshot.radiation_usv_hr),
             val_col,
             theme,
@@ -1353,7 +1364,7 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
         ui_components::stat_card(
             &mut cols[1],
             114.0,
-            "CABIN CO2 / O2",
+            "KABİN CO₂ / O₂",
             &format!(
                 "{:.0} PPM / {:.1}%",
                 app.snapshot.cabin_co2_ppm,
@@ -1365,7 +1376,7 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
         ui_components::stat_card(
             &mut cols[2],
             114.0,
-            "CABIN P / HUMID",
+            "KABİN BASINÇ / NEM",
             &format!(
                 "{:.1} KPA / {:.0}%",
                 app.snapshot.cabin_pressure_kpa.unwrap_or(101.3),
@@ -1383,7 +1394,7 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
         ui_components::stat_card(
             &mut cols[3],
             114.0,
-            "SANS RISK TIER",
+            "SANS RİSK DÜZEYİ",
             &sans_str,
             INK_PRIMARY,
             theme,
@@ -1468,7 +1479,7 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 &ctx,
                 "ack_local_alerts_btn",
                 Vec2::new(w2, 122.0),
-                "ACK LOCAL ALERTS",
+                "UYARILARI ONAYLA",
                 &format!("{} OPEN", unack),
                 unack > 0,
                 CardTheme::INPUT,

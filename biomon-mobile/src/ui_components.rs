@@ -1,11 +1,10 @@
 //! AEGIS-BIO UI Component Kit (`biomon-mobile` — Astronaut Suit Arm Tablet).
 //!
-//! Utilizes every component and primitive from `ui_components.rs` while strictly enforcing
-//! `DESIGN RULES TO FOLLOW.md`:
-//! - `#F0F0E4` (`240, 240, 228`) primary daylight background (zero dark-mode fills)
-//! - `#0B2027` (`11, 32, 39`) primary ink/letters
-//! - `#4CB944` (`76, 185, 68`) View Mode outline
-//! - `#FF8929` (`255, 137, 41`) Input Mode outline
+//! Kutup light theme selected by the user; existing component geometry is preserved.
+//! - `#F7F8F3` soft white surface; `#E6E9E5` outer background
+//! - `#173B3B` dark green text; `#187E78` teal accents
+//! - `#719A93` quiet panel borders; `#1A7862` nominal status
+//! - `#A65C16` amber input/caution state
 //! - `#CD0929` (`205, 9, 41`) Danger / Alert override
 //! - Minimum `26.0 pt` typography on mobile, `5.0 px` / `7.0 px` borders, no sliders/scrollbars.
 
@@ -17,17 +16,20 @@ use eframe::egui::{
 pub mod palette {
     use eframe::egui::Color32;
 
-    pub const BG_PRIMARY: Color32 = Color32::from_rgb(240, 240, 228); // #F0F0E4
-    pub const BG_HOVER: Color32 = Color32::from_rgb(228, 228, 212);
-    pub const BG_ACTIVE: Color32 = Color32::from_rgb(214, 214, 196);
-    pub const TRACK_BG: Color32 = Color32::from_rgb(222, 222, 206);
+    pub const BG_PRIMARY: Color32 = Color32::from_rgb(247, 248, 243); // #F7F8F3
+    pub const BG_HOVER: Color32 = Color32::from_rgb(233, 240, 234);
+    pub const BG_ACTIVE: Color32 = Color32::from_rgb(217, 229, 223);
+    pub const TRACK_BG: Color32 = Color32::from_rgb(217, 229, 223);
 
-    pub const INK_PRIMARY: Color32 = Color32::from_rgb(11, 32, 39); // #0B2027
-    pub const OUTLINE_VIEW: Color32 = Color32::from_rgb(76, 185, 68); // #4CB944
-    pub const OUTLINE_INPUT: Color32 = Color32::from_rgb(255, 137, 41); // #FF8929
+    pub const INK_PRIMARY: Color32 = Color32::from_rgb(23, 59, 59); // #173B3B
+    pub const OUTLINE_VIEW: Color32 = Color32::from_rgb(24, 126, 120); // #187E78
+    pub const OUTLINE_INPUT: Color32 = Color32::from_rgb(166, 92, 22); // #A65C16
     pub const OUTLINE_ALERT: Color32 = Color32::from_rgb(205, 9, 41); // #CD0929
 
-    pub const NOMINAL: Color32 = OUTLINE_VIEW;
+    pub const BG_OUTER: Color32 = Color32::from_rgb(230, 233, 229); // #E6E9E5
+    pub const BORDER_VIEW: Color32 = Color32::from_rgb(113, 154, 147); // #719A93
+    pub const INK_SECONDARY: Color32 = Color32::from_rgb(83, 106, 105); // #536A69
+    pub const NOMINAL: Color32 = Color32::from_rgb(26, 120, 98); // #1A7862
     pub const CAUTION: Color32 = OUTLINE_INPUT;
     pub const CRITICAL: Color32 = OUTLINE_ALERT;
 }
@@ -52,7 +54,7 @@ impl CardTheme {
     pub const VIEW: Self = Self {
         bg: palette::BG_PRIMARY,
         hover: palette::BG_HOVER,
-        border: palette::OUTLINE_VIEW,
+        border: palette::BORDER_VIEW,
         accent: palette::OUTLINE_VIEW,
         stroke_width: 5.0,
     };

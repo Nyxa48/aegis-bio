@@ -202,15 +202,91 @@ fn claim_open_slot(
     None
 }
 
-/// Pure-Rust OS routing-table probe to discover active non-loopback local IPv4 addresses.
-/// UDP `connect` only inspects kernel route selection and transmits zero packets.
+fn is_rfc1918_v4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    (o[0] == 192 && o[1] == 168) || (o[0] == 172 && (16..=31).contains(&o[1])) || o[0] == 10
+}
+
+fn is_cgnat_v4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+#[cfg(target_os = "windows")]
+fn collect_windows_adapter_ipv4s(out: &mut Vec<Ipv4Addr>) {
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    let mut size: u32 = 16 * 1024;
+    let mut buf = vec![0u8; size as usize];
+
+    for _ in 0..3 {
+        let rc = unsafe {
+            GetAdaptersAddresses(
+                AF_INET.0 as u32,
+                flags,
+                None,
+                Some(buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                &mut size,
+            )
+        };
+        if rc == 0 {
+            let mut cur = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+            while !cur.is_null() {
+                let adapter = unsafe { &*cur };
+                if adapter.OperStatus == IfOperStatusUp {
+                    let mut uc = adapter.FirstUnicastAddress;
+                    while !uc.is_null() {
+                        let ua = unsafe { &*uc };
+                        if !ua.Address.lpSockaddr.is_null() {
+                            let sa_fam = unsafe { (*ua.Address.lpSockaddr).sa_family };
+                            if sa_fam == AF_INET {
+                                let sa_in = unsafe { &*(ua.Address.lpSockaddr as *const SOCKADDR_IN) };
+                                let ip = Ipv4Addr::from(u32::from_be(unsafe { sa_in.sin_addr.S_un.S_addr }));
+                                if !ip.is_unspecified()
+                                    && !ip.is_loopback()
+                                    && !ip.is_multicast()
+                                    && !out.contains(&ip)
+                                {
+                                    out.push(ip);
+                                }
+                            }
+                        }
+                        uc = ua.Next;
+                    }
+                }
+                cur = adapter.Next;
+            }
+            return;
+        } else if rc == ERROR_BUFFER_OVERFLOW.0 {
+            buf.resize(size as usize, 0);
+        } else {
+            return;
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn collect_windows_adapter_ipv4s(_out: &mut Vec<Ipv4Addr>) {}
+
+/// Enumerates active local IPv4 addresses via Windows adapter tables + OS route probes,
+/// prioritizing Windows Mobile Hotspot (`192.168.137.1`), real RFC-1918 LAN IPs, and
+/// placing host-only virtual / CGNAT tunnel interfaces last.
 pub fn detect_local_ipv4s() -> Vec<String> {
-    let mut found = Vec::new();
+    let mut ips: Vec<Ipv4Addr> = Vec::new();
+    collect_windows_adapter_ipv4s(&mut ips);
+
     for probe in [
+        "192.168.137.1:80",
         "192.168.1.1:80",
         "192.168.0.1:80",
         "192.168.43.1:80",
-        "192.168.137.1:80",
         "172.20.10.1:80",
         "10.0.0.1:80",
         "172.16.0.1:80",
@@ -223,13 +299,39 @@ pub fn detect_local_ipv4s() -> Vec<String> {
             && !v4.is_unspecified()
             && !v4.is_loopback()
             && !v4.is_link_local()
+            && !ips.contains(&v4)
         {
-            let s = v4.to_string();
-            if !found.contains(&s) {
-                found.push(s);
-            }
+            ips.push(v4);
         }
     }
+
+    ips.sort_by_key(|ip| {
+        let o = ip.octets();
+        if *ip == Ipv4Addr::new(192, 168, 137, 1) {
+            0_u8
+        } else if o[0] == 192 && o[1] == 168 && o[2] == 137 {
+            1_u8
+        } else if is_rfc1918_v4(*ip) && !(o[0] == 192 && o[1] == 168 && o[2] == 56) {
+            2_u8
+        } else if is_rfc1918_v4(*ip) {
+            3_u8
+        } else if !ip.is_link_local() && !is_cgnat_v4(*ip) {
+            4_u8
+        } else if ip.is_link_local() {
+            5_u8
+        } else {
+            6_u8
+        }
+    });
+
+    // Drop link-local unless nothing else exists or a 169.254 interface is the only AP fallback
+    let has_routable = ips.iter().any(|ip| !ip.is_link_local());
+    let mut found: Vec<String> = ips
+        .into_iter()
+        .filter(|ip| !has_routable || !ip.is_link_local())
+        .map(|ip| ip.to_string())
+        .collect();
+
     if found.is_empty() {
         found.push(Ipv4Addr::LOCALHOST.to_string());
     }
@@ -240,7 +342,7 @@ pub struct HubLanServer {
     bind_addr: String,
     tcp_port: Arc<AtomicU16>,
     discovery_port: Arc<AtomicU16>,
-    local_ipv4s: Vec<String>,
+    local_ipv4s: Arc<RwLock<Vec<String>>>,
     is_ready: Arc<AtomicBool>,
     discovery_ready: Arc<AtomicBool>,
     last_error: Arc<RwLock<Option<String>>>,
@@ -263,7 +365,7 @@ impl HubLanServer {
     }
 
     pub fn start_with_ports(bind_ip: &str, req_tcp_port: u16, req_discovery_port: u16) -> Self {
-        let local_ipv4s = detect_local_ipv4s();
+        let local_ipv4s = Arc::new(RwLock::new(detect_local_ipv4s()));
         let tcp_port_atomic = Arc::new(AtomicU16::new(req_tcp_port));
         let disc_port_atomic = Arc::new(AtomicU16::new(req_discovery_port));
         let is_ready = Arc::new(AtomicBool::new(false));
@@ -559,8 +661,19 @@ impl HubLanServer {
         self.discovery_port.load(Ordering::SeqCst)
     }
 
-    pub fn local_ipv4s(&self) -> &[String] {
-        &self.local_ipv4s
+    pub fn local_ipv4s(&self) -> Vec<String> {
+        self.local_ipv4s
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| vec![Ipv4Addr::LOCALHOST.to_string()])
+    }
+
+    pub fn refresh_local_ipv4s(&self) -> Vec<String> {
+        let fresh = detect_local_ipv4s();
+        if let Ok(mut g) = self.local_ipv4s.write() {
+            *g = fresh.clone();
+        }
+        fresh
     }
 
     pub fn discovery_ready(&self) -> bool {

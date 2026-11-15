@@ -1490,6 +1490,32 @@ impl Database {
         })
     }
 
+    pub fn load_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM local_settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn save_setting(&self, key: &str, value: &str) -> Result<()> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.conn
+                .execute("DELETE FROM local_settings WHERE key = ?1", params![key])?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO local_settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, trimmed],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn mark_all_synced(&self) -> Result<usize> {
         let mut total = 0;
         total += self.conn.execute(

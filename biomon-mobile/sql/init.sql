@@ -168,6 +168,12 @@ CREATE TABLE IF NOT EXISTS osteoporosis_daily_state (
 CREATE INDEX IF NOT EXISTS idx_biomon_osteo_unsynced
     ON osteoporosis_daily_state(is_synced);
 
+-- 9b. Local Persistent Device Settings (e.g. hub_override_addr)
+CREATE TABLE IF NOT EXISTS local_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- 10. Views for Daily Derived Models
 CREATE VIEW IF NOT EXISTS v_daily_sodium AS
 SELECT

@@ -5,6 +5,7 @@ use crate::db::{
     NewSurgeonIncident, OsteoporosisDailyHistory, ReferenceEdaPoint, ReferenceRadiationPoint,
     ResearchLabObservation, SansDailyHistory, SleepDailySummary, SurgeonIncident,
 };
+use crate::hotspot::{HotspotManager, HotspotSnapshot};
 use crate::net::{HubDownlinkMessage, HubLanServer, HubNetEvent, InboundPacket};
 use crate::ui;
 use crate::ui_components;
@@ -205,6 +206,7 @@ pub struct HubUiSnapshot {
     pub connected_clients: usize,
     pub packets_received: u64,
     pub last_packet_info: String,
+    pub hotspot: HotspotSnapshot,
     pub alerts: PanelAlertState,
 }
 
@@ -252,7 +254,9 @@ pub struct AppState {
     pub snapshot: HubUiSnapshot,
     pub db: Database,
     pub lan_server: HubLanServer,
+    pub hotspot_manager: HotspotManager,
     last_sim_tick: Instant,
+    last_ip_refresh: Instant,
     sim_tick_counter: u64,
     last_biomon_rx_at: HashMap<String, Instant>,
 }
@@ -271,7 +275,10 @@ impl AppState {
     }
 
     pub fn from_db_and_server(db: Database, lan_server: HubLanServer) -> Self {
-        let snapshot = Self::build_snapshot_from_db(&db, &lan_server, 0, "AWAITING LAN CLIENTS");
+        let hotspot_manager = HotspotManager::new();
+        let mut snapshot =
+            Self::build_snapshot_from_db(&db, &lan_server, 0, "AWAITING LAN CLIENTS");
+        snapshot.hotspot = hotspot_manager.snapshot();
         let initial_phase = snapshot
             .crew_summaries
             .first()
@@ -294,7 +301,9 @@ impl AppState {
             snapshot,
             db,
             lan_server,
+            hotspot_manager,
             last_sim_tick: Instant::now(),
+            last_ip_refresh: Instant::now(),
             sim_tick_counter: 0,
             last_biomon_rx_at: HashMap::new(),
         }
@@ -498,13 +507,14 @@ impl AppState {
             db_path: db.path().display().to_string(),
             lan_ready: lan_server.is_ready(),
             lan_discovery_ready: lan_server.discovery_ready(),
-            lan_local_ips: lan_server.local_ipv4s().to_vec(),
+            lan_local_ips: lan_server.local_ipv4s(),
             lan_tcp_port: lan_server.tcp_port(),
             lan_discovery_port: lan_server.discovery_port(),
             lan_error: lan_server.last_error(),
             connected_clients: lan_server.connected_clients(),
             packets_received,
             last_packet_info: last_packet_info.to_string(),
+            hotspot: HotspotSnapshot::default(),
             alerts: PanelAlertState::default(),
         };
         snap.recompute_alerts();
@@ -735,6 +745,21 @@ impl AppState {
 
     pub fn toggle_crew_sim(&mut self) {
         self.crew_sim_enabled = !self.crew_sim_enabled;
+    }
+
+    pub fn toggle_hotspot(&mut self) {
+        self.hotspot_manager.toggle();
+        self.snapshot.hotspot = self.hotspot_manager.snapshot();
+    }
+
+    pub fn configure_aegis_hotspot(&mut self) {
+        self.hotspot_manager.apply_aegis_credentials();
+        self.snapshot.hotspot = self.hotspot_manager.snapshot();
+    }
+
+    pub fn allow_firewall_ports(&mut self) {
+        self.hotspot_manager.ensure_firewall_rules();
+        self.snapshot.hotspot = self.hotspot_manager.snapshot();
     }
 
     pub fn toggle_incident_resolved(&mut self, incident_id: i64, resolved: bool) {
@@ -1082,6 +1107,7 @@ impl AppState {
         self.snapshot.lan_discovery_ready = self.lan_server.discovery_ready();
         self.snapshot.lan_error = self.lan_server.last_error();
         self.snapshot.connected_clients = self.lan_server.connected_clients();
+        self.snapshot.hotspot = self.hotspot_manager.snapshot();
 
         let mut changed = false;
         let mut refresh_inputs = false;
@@ -1508,6 +1534,11 @@ impl eframe::App for AppState {
         self.poll_network();
 
         let now = Instant::now();
+        if now.duration_since(self.last_ip_refresh) >= Duration::from_secs(2) {
+            self.last_ip_refresh = now;
+            self.snapshot.lan_local_ips = self.lan_server.refresh_local_ipv4s();
+            self.snapshot.hotspot = self.hotspot_manager.snapshot();
+        }
         if self.crew_sim_enabled {
             if now.duration_since(self.last_sim_tick) >= Duration::from_secs(1) {
                 self.last_sim_tick = now;

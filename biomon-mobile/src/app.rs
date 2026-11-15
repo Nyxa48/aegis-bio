@@ -218,6 +218,7 @@ pub struct AppState {
     pub selected_protocol_idx: usize,
     pub status_banner: String,
     pub hub_endpoint: String,
+    pub hub_addr_input: String,
     pub pending_sync_batch: Option<u64>,
     pub last_live_push_time: f64,
     pub snapshot: UiSnapshot,
@@ -270,8 +271,13 @@ impl AppState {
                 sleep_target_min: 480,
             });
 
-        let lan_client =
-            BiomonLanClient::new_auto(&config.astronaut_id, &config.callsign, &config.active_phase);
+        let saved_override = db.load_setting("hub_override_addr").ok().flatten();
+        let lan_client = BiomonLanClient::new_auto_with_override(
+            &config.astronaut_id,
+            &config.callsign,
+            &config.active_phase,
+            saved_override,
+        );
         Self::from_db_client_and_crew(db, lan_client, &config.astronaut_id)
     }
 
@@ -287,6 +293,7 @@ impl AppState {
     ) -> Self {
         let comms_state = lan_client.connection_state();
         let hub_endpoint = lan_client.target_hub_addr();
+        let hub_addr_input = lan_client.hub_override().unwrap_or_default();
 
         let preset = CREW_PRESETS
             .iter()
@@ -459,6 +466,7 @@ impl AppState {
             selected_protocol_idx: 0,
             status_banner: format!("{} WAL READY", db_label.to_ascii_uppercase()),
             hub_endpoint,
+            hub_addr_input,
             pending_sync_batch: None,
             last_live_push_time: -1.0,
             snapshot,
@@ -919,6 +927,28 @@ impl AppState {
         self.lan_client.trigger_rescan();
         self.hub_endpoint = self.lan_client.target_hub_addr();
         self.status_banner = "SCANNING LOCAL NETWORK FOR HUB...".to_string();
+    }
+
+    pub fn apply_hub_override(&mut self, raw: Option<&str>) {
+        self.lan_client.set_hub_override(raw);
+        let normalized = self.lan_client.hub_override();
+        let _ = self
+            .db
+            .save_setting("hub_override_addr", normalized.as_deref().unwrap_or(""));
+        self.hub_addr_input = normalized.clone().unwrap_or_default();
+        self.hub_endpoint = self.lan_client.target_hub_addr();
+        self.status_banner = match normalized {
+            Some(addr) => format!("HUB TARGET LOCKED: {addr}"),
+            None => "AUTO LAN DISCOVERY ACTIVE".to_string(),
+        };
+    }
+
+    pub fn toggle_hotspot_preset(&mut self) {
+        if self.lan_client.hub_override().as_deref() == Some("192.168.137.1:7878") {
+            self.apply_hub_override(None);
+        } else {
+            self.apply_hub_override(Some("192.168.137.1:7878"));
+        }
     }
 
     fn adopt_crew_identity(&mut self, crew_id: &str, callsign_hint: &str) {

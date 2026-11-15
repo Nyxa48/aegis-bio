@@ -120,6 +120,31 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                     };
                     draw_lan_badge(ui, &lan_label, app.snapshot.lan_ready);
                     ui.add_space(8.0);
+                    let hs = &app.snapshot.hotspot;
+                    let hs_lbl = if hs.transitioning {
+                        "HOTSPOT: ...".to_string()
+                    } else if hs.active {
+                        "HOTSPOT: ON".to_string()
+                    } else {
+                        "HOTSPOT: OFF".to_string()
+                    };
+                    let hs_btn = egui::Button::new(
+                        RichText::new(&hs_lbl)
+                            .size(14.0)
+                            .strong()
+                            .color(INK_PRIMARY),
+                    )
+                    .min_size(Vec2::new(112.0, 28.0))
+                    .fill(if hs.active { BG_ACTIVE } else { BG_PRIMARY })
+                    .stroke(Stroke::new(
+                        BORDER_DESKTOP,
+                        if hs.active { OUTLINE_VIEW } else { OUTLINE_INPUT },
+                    ))
+                    .corner_radius(CornerRadius::same(6));
+                    if ui.add(hs_btn).clicked() {
+                        app.toggle_hotspot();
+                    }
+                    ui.add_space(8.0);
                     draw_status_badge(
                         ui,
                         &format!(
@@ -530,17 +555,28 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             let lan_sub = if app.snapshot.lan_ready {
                 let ip = app
                     .snapshot
-                    .lan_local_ips
-                    .first()
-                    .map(String::as_str)
+                    .hotspot
+                    .gateway_ip
+                    .as_deref()
+                    .or_else(|| app.snapshot.lan_local_ips.first().map(String::as_str))
                     .unwrap_or("0.0.0.0");
-                format!(
-                    "{}:{} | {} CLIENTS | {} PKTS",
-                    ip,
-                    app.snapshot.lan_tcp_port,
-                    app.snapshot.connected_clients,
-                    app.snapshot.packets_received
-                )
+                if app.snapshot.hotspot.active {
+                    format!(
+                        "AP {} | {}:{} ({} ON)",
+                        app.snapshot.hotspot.ssid,
+                        ip,
+                        app.snapshot.lan_tcp_port,
+                        app.snapshot.connected_clients
+                    )
+                } else {
+                    format!(
+                        "{}:{} | {} CLIENTS | {} PKTS",
+                        ip,
+                        app.snapshot.lan_tcp_port,
+                        app.snapshot.connected_clients,
+                        app.snapshot.packets_received
+                    )
+                }
             } else {
                 app.snapshot
                     .lan_error
@@ -2391,6 +2427,183 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
     }
     if toggle_crew_sim_clicked {
         app.toggle_crew_sim();
+    }
+
+    ui.add_space(12.0);
+
+    // 1B. Laptop Wi-Fi Hotspot & Firewall Access Point Controls
+    let mut toggle_hotspot_clicked = false;
+    let mut set_aegis_ssid_clicked = false;
+    let mut allow_fw_clicked = false;
+    let hs_border = if app.snapshot.hotspot.last_error.is_some() {
+        OUTLINE_ALERT
+    } else if app.snapshot.hotspot.active && app.snapshot.hotspot.firewall_rule_ok {
+        OUTLINE_VIEW
+    } else {
+        OUTLINE_INPUT
+    };
+    section_frame(hs_border).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        let hs = &app.snapshot.hotspot;
+        ui.horizontal(|ui| {
+            let (wifi_rect, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+            ui_components::signal_bars(ui, 18.0, hs.active);
+            let _ = wifi_rect;
+            ui.label(
+                RichText::new("LAPTOP WI-FI HOTSPOT & FIREWALL ACCESS POINT")
+                    .size(21.0)
+                    .strong()
+                    .color(INK_PRIMARY),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let hs_btn_lbl = if hs.transitioning {
+                    "UPDATING HOTSPOT..."
+                } else if hs.active {
+                    "STOP HOTSPOT"
+                } else {
+                    "START LAPTOP HOTSPOT"
+                };
+                let hs_btn = egui::Button::new(
+                    RichText::new(hs_btn_lbl)
+                        .size(15.0)
+                        .strong()
+                        .color(INK_PRIMARY),
+                )
+                .min_size(Vec2::new(205.0, 36.0))
+                .fill(if hs.active { BG_ACTIVE } else { BG_PRIMARY })
+                .stroke(Stroke::new(
+                    BORDER_DESKTOP,
+                    if hs.active { OUTLINE_ALERT } else { OUTLINE_VIEW },
+                ));
+                if ui.add(hs_btn).clicked() {
+                    toggle_hotspot_clicked = true;
+                }
+
+                ui.add_space(8.0);
+                let ssid_btn = egui::Button::new(
+                    RichText::new("SET SSID: AEGIS-HUB")
+                        .size(15.0)
+                        .strong()
+                        .color(INK_PRIMARY),
+                )
+                .min_size(Vec2::new(180.0, 36.0))
+                .fill(BG_PRIMARY)
+                .stroke(Stroke::new(BORDER_DESKTOP, OUTLINE_INPUT));
+                if ui.add(ssid_btn).clicked() {
+                    set_aegis_ssid_clicked = true;
+                }
+
+                ui.add_space(8.0);
+                let fw_btn = egui::Button::new(
+                    RichText::new(if hs.firewall_rule_ok {
+                        "FIREWALL: OPEN"
+                    } else {
+                        "ALLOW FIREWALL PORTS"
+                    })
+                    .size(15.0)
+                    .strong()
+                    .color(INK_PRIMARY),
+                )
+                .min_size(Vec2::new(195.0, 36.0))
+                .fill(if hs.firewall_rule_ok {
+                    BG_PRIMARY
+                } else {
+                    BG_ACTIVE
+                })
+                .stroke(Stroke::new(
+                    BORDER_DESKTOP,
+                    if hs.firewall_rule_ok {
+                        OUTLINE_VIEW
+                    } else {
+                        OUTLINE_INPUT
+                    },
+                ));
+                if ui.add(fw_btn).clicked() {
+                    allow_fw_clicked = true;
+                }
+            });
+        });
+        ui.add_space(8.0);
+        let fallback_ip = app
+            .snapshot
+            .lan_local_ips
+            .first()
+            .map(String::as_str)
+            .unwrap_or("192.168.137.1");
+        let gw_display = hs.gateway_ip.as_deref().unwrap_or(fallback_ip);
+        let ssid_display = if hs.ssid.is_empty() {
+            "AEGIS-HUB"
+        } else {
+            &hs.ssid
+        };
+        let pass_display = if hs.passphrase.is_empty() {
+            "SEE WIN SETTINGS"
+        } else {
+            &hs.passphrase
+        };
+        ui.columns(4, |c| {
+            ui_components::stat_card(
+                &mut c[0],
+                84.0,
+                "HOTSPOT MODE",
+                hs.mode.label(),
+                if hs.active { OUTLINE_VIEW } else { INK_PRIMARY },
+                &hs.status_text,
+                CardTheme::COMMS,
+            );
+            ui_components::stat_card(
+                &mut c[1],
+                84.0,
+                "WI-FI SSID",
+                ssid_display,
+                INK_PRIMARY,
+                "DIRECT LAPTOP AP",
+                CardTheme::COMMS,
+            );
+            ui_components::stat_card(
+                &mut c[2],
+                84.0,
+                "WPA2 PASSWORD",
+                pass_display,
+                INK_PRIMARY,
+                "CONNECT PHONES HERE",
+                CardTheme::COMMS,
+            );
+            ui_components::stat_card(
+                &mut c[3],
+                84.0,
+                "HOTSPOT HUB IP",
+                gw_display,
+                INK_PRIMARY,
+                &format!(
+                    "CLIENTS {}/{} | FW {}",
+                    hs.client_count,
+                    hs.max_clients,
+                    if hs.firewall_rule_ok { "OPEN" } else { "CHECK" }
+                ),
+                CardTheme::COMMS,
+            );
+        });
+        if let Some(ref err) = hs.last_error {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!("HOTSPOT NOTICE: {err}"))
+                    .size(14.0)
+                    .family(FontFamily::Monospace)
+                    .strong()
+                    .color(OUTLINE_ALERT),
+            );
+        }
+    });
+
+    if toggle_hotspot_clicked {
+        app.toggle_hotspot();
+    }
+    if set_aegis_ssid_clicked {
+        app.configure_aegis_hotspot();
+    }
+    if allow_fw_clicked {
+        app.allow_firewall_ports();
     }
 
     ui.add_space(12.0);

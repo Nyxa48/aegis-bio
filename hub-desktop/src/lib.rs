@@ -1,6 +1,7 @@
 pub mod app;
 pub mod calc;
 pub mod db;
+pub mod hotspot;
 pub mod icons;
 pub mod net;
 pub mod ui;

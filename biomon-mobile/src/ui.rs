@@ -1379,8 +1379,8 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
     let rows_total = match (app.mode == AppMode::ViewMode, narrow) {
         (true, true) => 4.0,
         (true, false) => 3.0,
-        (false, true) => 7.0,
-        (false, false) => 4.0,
+        (false, true) => 9.0,
+        (false, false) => 5.0,
     };
     let row_h = ((avail_h - gap * (rows_total - 1.0)) / rows_total).max(44.0);
 
@@ -1625,6 +1625,93 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             }
         });
         ui.add_space(gap);
+        ui.add_space(gap);
+        let is_hotspot_preset =
+            app.lan_client.hub_override().as_deref() == Some("192.168.137.1:7878");
+        let is_auto = app.lan_client.hub_override().is_none();
+        ui.columns(2, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "comms_hotspot_preset_narrow",
+                Vec2::new(w0, row_h),
+                "HOTSPOT AP",
+                "192.168.137.1",
+                is_hotspot_preset,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.toggle_hotspot_preset();
+            }
+
+            let w1 = cols[1].available_width();
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "comms_auto_lan_narrow",
+                Vec2::new(w1, row_h),
+                "AUTO LAN",
+                "SCAN",
+                is_auto,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.apply_hub_override(None);
+            }
+        });
+        ui.add_space(gap);
+        ui.columns(2, |cols| {
+            let input_box_w = cols[0].available_width();
+            cols[0].allocate_ui_with_layout(
+                Vec2::new(input_box_w, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::Frame::NONE
+                        .fill(BG_PRIMARY)
+                        .stroke(Stroke::new(2.5, OUTLINE_INPUT))
+                        .corner_radius(CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(
+                                (input_box_w - 18.0).max(60.0),
+                                (row_h - 14.0).max(26.0),
+                            ));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut app.hub_addr_input)
+                                    .hint_text("192.168.137.1:7878")
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(f32::INFINITY)
+                                    .font(FontId::new(
+                                        (row_h * 0.34).clamp(13.0, 19.0),
+                                        FontFamily::Monospace,
+                                    ))
+                                    .text_color(INK_PRIMARY),
+                            );
+                        });
+                },
+            );
+
+            let w1 = cols[1].available_width();
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "comms_connect_ip_narrow",
+                Vec2::new(w1, row_h),
+                "CONNECT IP",
+                "MANUAL",
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                let v = app.hub_addr_input.clone();
+                app.apply_hub_override(Some(&v));
+            }
+        });
+        ui.add_space(gap);
         ui_components::stat_card(
             ui,
             row_h,
@@ -1755,6 +1842,90 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
                 INK_PRIMARY,
                 theme,
             );
+        });
+        ui.add_space(gap);
+        let is_hotspot_preset =
+            app.lan_client.hub_override().as_deref() == Some("192.168.137.1:7878");
+        let is_auto = app.lan_client.hub_override().is_none();
+        ui.columns(4, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "comms_hotspot_preset",
+                Vec2::new(w0, row_h),
+                "HOTSPOT AP",
+                "192.168.137.1",
+                is_hotspot_preset,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.toggle_hotspot_preset();
+            }
+
+            let w1 = cols[1].available_width();
+            cols[1].allocate_ui_with_layout(
+                Vec2::new(w1, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    egui::Frame::NONE
+                        .fill(BG_PRIMARY)
+                        .stroke(Stroke::new(2.5, OUTLINE_INPUT))
+                        .corner_radius(CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(
+                                (w1 - 18.0).max(80.0),
+                                (row_h - 14.0).max(26.0),
+                            ));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut app.hub_addr_input)
+                                    .hint_text("192.168.137.1:7878")
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(f32::INFINITY)
+                                    .font(FontId::new(
+                                        (row_h * 0.34).clamp(13.0, 19.0),
+                                        FontFamily::Monospace,
+                                    ))
+                                    .text_color(INK_PRIMARY),
+                            );
+                        });
+                },
+            );
+
+            let w2 = cols[2].available_width();
+            if ui_components::touch_button(
+                &mut cols[2],
+                &ctx,
+                "comms_connect_ip",
+                Vec2::new(w2, row_h),
+                "CONNECT IP",
+                "MANUAL",
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                let v = app.hub_addr_input.clone();
+                app.apply_hub_override(Some(&v));
+            }
+
+            let w3 = cols[3].available_width();
+            if ui_components::touch_button(
+                &mut cols[3],
+                &ctx,
+                "comms_auto_lan",
+                Vec2::new(w3, row_h),
+                "AUTO LAN",
+                "SCAN",
+                is_auto,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.apply_hub_override(None);
+            }
         });
     }
 }

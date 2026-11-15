@@ -174,6 +174,7 @@ impl Default for BiomonLanConfig {
 struct LocalIpv4Iface {
     ip: Ipv4Addr,
     broadcast: Ipv4Addr,
+    prefix_len: u8,
 }
 
 fn is_rfc1918(ip: Ipv4Addr) -> bool {
@@ -186,7 +187,31 @@ fn is_cgnat(ip: Ipv4Addr) -> bool {
     o[0] == 100 && (64..=127).contains(&o[1])
 }
 
-fn push_iface(out: &mut Vec<LocalIpv4Iface>, ip: Ipv4Addr, broadcast: Option<Ipv4Addr>) {
+fn is_windows_hotspot_subnet(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 192 && o[1] == 168 && o[2] == 137
+}
+
+fn normalize_hub_override(raw: &str, default_port: u16) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    if trimmed.parse::<SocketAddr>().is_ok() {
+        return Some(trimmed.to_string());
+    }
+    if let Ok(v4) = trimmed.parse::<Ipv4Addr>() {
+        return Some(format!("{v4}:{default_port}"));
+    }
+    Some(trimmed.to_string())
+}
+
+fn push_iface(
+    out: &mut Vec<LocalIpv4Iface>,
+    ip: Ipv4Addr,
+    broadcast: Option<Ipv4Addr>,
+    prefix_len: u8,
+) {
     if ip.is_unspecified() || ip.is_loopback() || ip.is_link_local() || ip.is_multicast() {
         return;
     }
@@ -198,6 +223,7 @@ fn push_iface(out: &mut Vec<LocalIpv4Iface>, ip: Ipv4Addr, broadcast: Option<Ipv
         out.push(LocalIpv4Iface {
             ip,
             broadcast: bcast,
+            prefix_len: prefix_len.clamp(8, 32),
         });
     }
 }
@@ -222,21 +248,24 @@ fn collect_unix_ifaces(out: &mut Vec<LocalIpv4Iface>) {
             {
                 let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
-                let bcast = if !ifa.ifa_netmask.is_null()
+                let (bcast, prefix_len) = if !ifa.ifa_netmask.is_null()
                     && (*ifa.ifa_netmask).sa_family as i32 == libc::AF_INET
                 {
                     let nm = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
                     let mask_u32 = u32::from_be(nm.sin_addr.s_addr);
                     let ip_u32 = u32::from_be(sa.sin_addr.s_addr);
                     if mask_u32 != 0 {
-                        Some(Ipv4Addr::from((ip_u32 & mask_u32) | !mask_u32))
+                        (
+                            Some(Ipv4Addr::from((ip_u32 & mask_u32) | !mask_u32)),
+                            (mask_u32.count_ones() as u8).clamp(8, 32),
+                        )
                     } else {
-                        None
+                        (None, 24)
                     }
                 } else {
-                    None
+                    (None, 24)
                 };
-                push_iface(out, ip, bcast);
+                push_iface(out, ip, bcast, prefix_len);
             }
             cur = ifa.ifa_next;
         }
@@ -248,16 +277,16 @@ fn collect_unix_ifaces(out: &mut Vec<LocalIpv4Iface>) {
 fn collect_unix_ifaces(_out: &mut Vec<LocalIpv4Iface>) {}
 
 /// Enumerates active local IPv4 interfaces (Android/Linux `getifaddrs` + multi-subnet OS route probes),
-/// sorted with private RFC-1918 LAN interfaces first so cellular interfaces never shadow Wi-Fi.
+/// sorted with laptop hotspot (`192.168.137.x`) and RFC-1918 LAN interfaces first.
 fn detect_local_ipv4_ifaces() -> Vec<LocalIpv4Iface> {
     let mut found = Vec::new();
     collect_unix_ifaces(&mut found);
 
     for probe in [
+        "192.168.137.1:80",
         "192.168.1.1:80",
         "192.168.0.1:80",
         "192.168.43.1:80",
-        "192.168.137.1:80",
         "172.20.10.1:80",
         "10.0.0.1:80",
         "172.16.0.1:80",
@@ -268,17 +297,19 @@ fn detect_local_ipv4_ifaces() -> Vec<LocalIpv4Iface> {
             && sock.connect(probe).is_ok()
             && let Ok(IpAddr::V4(v4)) = sock.local_addr().map(|a| a.ip())
         {
-            push_iface(&mut found, v4, None);
+            push_iface(&mut found, v4, None, 24);
         }
     }
 
     found.sort_by_key(|iface| {
-        if is_rfc1918(iface.ip) {
+        if is_windows_hotspot_subnet(iface.ip) {
             0_u8
-        } else if !is_cgnat(iface.ip) {
+        } else if is_rfc1918(iface.ip) {
             1_u8
-        } else {
+        } else if !is_cgnat(iface.ip) {
             2_u8
+        } else {
+            3_u8
         }
     });
     found
@@ -466,7 +497,104 @@ enum DiscoveryResult {
     NoneFound,
 }
 
-/// Subnet `/24` TCP sweep fallback if Wi-Fi AP/hotspot isolates UDP broadcast traffic.
+/// Fast-path probe directly against `.1` gateway of each local non-CGNAT RFC-1918 interface
+/// (e.g. `192.168.137.1` when connected to a Windows Laptop Hotspot), avoiding full subnet sweep.
+async fn probe_gateway_tcp(
+    tcp_port: u16,
+    identity: &ClientIdentity,
+    device_id: &str,
+) -> DiscoveryResult {
+    let ifaces = detect_local_ipv4_ifaces();
+    let mut gateways = Vec::new();
+    for iface in ifaces {
+        if !is_rfc1918(iface.ip) || is_cgnat(iface.ip) {
+            continue;
+        }
+        let o = iface.ip.octets();
+        let gw = Ipv4Addr::new(o[0], o[1], o[2], 1);
+        if iface.ip != gw {
+            let sa = SocketAddr::from((gw, tcp_port));
+            if !gateways.contains(&sa) {
+                gateways.push(sa);
+            }
+        }
+    }
+    if gateways.is_empty() {
+        return DiscoveryResult::NoneFound;
+    }
+
+    let mut handles = Vec::with_capacity(gateways.len());
+    for gw in gateways {
+        let id_clone = identity.clone();
+        let dev_clone = device_id.to_string();
+        handles.push(tokio::spawn(async move {
+            (
+                gw,
+                verify_tcp_hub(gw, &id_clone, &dev_clone, Duration::from_millis(350)).await,
+            )
+        }));
+    }
+    for h in handles {
+        if let Ok((addr, outcome)) = h.await {
+            match outcome {
+                HandshakeOutcome::Accepted(s, ack) => {
+                    return DiscoveryResult::Connected(addr, s, ack);
+                }
+                HandshakeOutcome::Rejected(msg) => {
+                    return DiscoveryResult::Rejected(msg);
+                }
+                HandshakeOutcome::Failed => {}
+            }
+        }
+    }
+    DiscoveryResult::NoneFound
+}
+
+async fn discover_udp_or_gateway(
+    discovery_port: u16,
+    tcp_port: u16,
+    identity: &ClientIdentity,
+    device_id: &str,
+) -> DiscoveryResult {
+    let id_udp = identity.clone();
+    let dev_udp = device_id.to_string();
+    let udp_task = tokio::spawn(async move {
+        if let Some(hub_addr) = discover_via_udp(discovery_port, &id_udp).await {
+            match verify_tcp_hub(hub_addr, &id_udp, &dev_udp, Duration::from_millis(1200)).await {
+                HandshakeOutcome::Accepted(s, ack) => DiscoveryResult::Connected(hub_addr, s, ack),
+                HandshakeOutcome::Rejected(msg) => DiscoveryResult::Rejected(msg),
+                HandshakeOutcome::Failed => DiscoveryResult::NoneFound,
+            }
+        } else {
+            DiscoveryResult::NoneFound
+        }
+    });
+
+    let id_gw = identity.clone();
+    let dev_gw = device_id.to_string();
+    let gw_task = tokio::spawn(async move { probe_gateway_tcp(tcp_port, &id_gw, &dev_gw).await });
+
+    tokio::pin!(udp_task);
+    tokio::pin!(gw_task);
+
+    tokio::select! {
+        res = &mut udp_task => {
+            match res.unwrap_or(DiscoveryResult::NoneFound) {
+                found @ (DiscoveryResult::Connected(..) | DiscoveryResult::Rejected(..)) => found,
+                DiscoveryResult::NoneFound => gw_task.await.unwrap_or(DiscoveryResult::NoneFound),
+            }
+        }
+        res = &mut gw_task => {
+            match res.unwrap_or(DiscoveryResult::NoneFound) {
+                found @ (DiscoveryResult::Connected(..) | DiscoveryResult::Rejected(..)) => found,
+                DiscoveryResult::NoneFound => udp_task.await.unwrap_or(DiscoveryResult::NoneFound),
+            }
+        }
+    }
+}
+
+/// Subnet TCP sweep fallback if UDP broadcast is dropped and Hub is not at `.1`.
+/// For wider subnets (`prefix_len < 24`, e.g. `/22` gov/campus Wi-Fi), sweeps up to +-2 adjacent `/24` blocks.
 async fn discover_via_subnet_tcp(
     tcp_port: u16,
     identity: &ClientIdentity,
@@ -484,37 +612,60 @@ async fn discover_via_subnet_tcp(
             continue;
         }
         let oct = ip.octets();
-        let mut candidates = Vec::with_capacity(253);
-        for host in 1..=254_u8 {
-            if host == oct[3] {
-                continue;
+        let mut slash24_blocks: Vec<[u8; 3]> = vec![[oct[0], oct[1], oct[2]]];
+        if iface.prefix_len < 24 && iface.prefix_len >= 16 {
+            let ip_u32 = u32::from(ip);
+            let mask = !0_u32 << (32 - iface.prefix_len);
+            let net_base = ip_u32 & mask;
+            let net_end = net_base | !mask;
+            let my_block = (ip_u32 >> 8) as i64;
+            let min_block = (net_base >> 8) as i64;
+            let max_block = (net_end >> 8) as i64;
+            for delta in [1_i64, -1, 2, -2] {
+                let b = my_block + delta;
+                if b >= min_block && b <= max_block {
+                    slash24_blocks.push([
+                        ((b >> 16) & 0xff) as u8,
+                        ((b >> 8) & 0xff) as u8,
+                        (b & 0xff) as u8,
+                    ]);
+                }
             }
-            candidates.push(SocketAddr::from(([oct[0], oct[1], oct[2], host], tcp_port)));
         }
 
-        for chunk in candidates.chunks(64) {
-            let mut handles = Vec::with_capacity(chunk.len());
-            for &cand in chunk {
-                let id_clone = identity.clone();
-                let dev_clone = device_id.to_string();
-                handles.push(tokio::spawn(async move {
-                    (
-                        cand,
-                        verify_tcp_hub(cand, &id_clone, &dev_clone, Duration::from_millis(350))
-                            .await,
-                    )
-                }));
+        for blk in slash24_blocks {
+            let mut candidates = Vec::with_capacity(254);
+            for host in 1..=254_u8 {
+                if blk == [oct[0], oct[1], oct[2]] && host == oct[3] {
+                    continue;
+                }
+                candidates.push(SocketAddr::from(([blk[0], blk[1], blk[2], host], tcp_port)));
             }
-            for h in handles {
-                if let Ok((cand, outcome)) = h.await {
-                    match outcome {
-                        HandshakeOutcome::Accepted(s, ack) => {
-                            return DiscoveryResult::Connected(cand, s, ack);
+
+            for chunk in candidates.chunks(64) {
+                let mut handles = Vec::with_capacity(chunk.len());
+                for &cand in chunk {
+                    let id_clone = identity.clone();
+                    let dev_clone = device_id.to_string();
+                    handles.push(tokio::spawn(async move {
+                        (
+                            cand,
+                            verify_tcp_hub(cand, &id_clone, &dev_clone, Duration::from_millis(350))
+                                .await,
+                        )
+                    }));
+                }
+                for h in handles {
+                    if let Ok((cand, outcome)) = h.await {
+                        match outcome {
+                            HandshakeOutcome::Accepted(s, ack) => {
+                                return DiscoveryResult::Connected(cand, s, ack);
+                            }
+                            HandshakeOutcome::Rejected(msg) => {
+                                return DiscoveryResult::Rejected(msg);
+                            }
+                            HandshakeOutcome::Failed => {}
                         }
-                        HandshakeOutcome::Rejected(msg) => {
-                            return DiscoveryResult::Rejected(msg);
-                        }
-                        HandshakeOutcome::Failed => {}
                     }
                 }
             }
@@ -525,6 +676,8 @@ async fn discover_via_subnet_tcp(
 
 pub struct BiomonLanClient {
     endpoint_label: Arc<RwLock<String>>,
+    hub_override: Arc<RwLock<Option<String>>>,
+    default_tcp_port: u16,
     state: Arc<Mutex<ConnectionState>>,
     manual_blackout: Arc<AtomicBool>,
     hub_reachable: Arc<AtomicBool>,
@@ -552,21 +705,40 @@ impl BiomonLanClient {
     }
 
     pub fn new_auto(crew_id: &str, callsign: &str, active_phase: &str) -> Self {
-        let cfg = BiomonLanConfig {
+        Self::new_auto_with_override(crew_id, callsign, active_phase, None)
+    }
+
+    pub fn new_auto_with_override(
+        crew_id: &str,
+        callsign: &str,
+        active_phase: &str,
+        persisted_override: Option<String>,
+    ) -> Self {
+        let mut cfg = BiomonLanConfig {
             crew_id: crew_id.to_string(),
             callsign: callsign.to_string(),
             active_phase: active_phase.to_string(),
             ..Default::default()
         };
+        if cfg.hub_override_addr.is_none()
+            && let Some(raw) = persisted_override
+        {
+            cfg.hub_override_addr = normalize_hub_override(&raw, cfg.tcp_fallback_port);
+        }
         Self::with_config(cfg)
     }
 
     pub fn with_config(cfg: BiomonLanConfig) -> Self {
-        let initial_label = cfg
+        let normalized_override = cfg
             .hub_override_addr
+            .as_deref()
+            .and_then(|s| normalize_hub_override(s, cfg.tcp_fallback_port));
+        let default_tcp_port = cfg.tcp_fallback_port;
+        let initial_label = normalized_override
             .clone()
             .unwrap_or_else(|| "SEARCHING LAN...".to_string());
         let endpoint_label = Arc::new(RwLock::new(initial_label));
+        let hub_override = Arc::new(RwLock::new(normalized_override));
         let state = Arc::new(Mutex::new(ConnectionState::Offline));
         let manual_blackout = Arc::new(AtomicBool::new(false));
         let hub_reachable = Arc::new(AtomicBool::new(false));
@@ -589,6 +761,7 @@ impl BiomonLanClient {
             .expect("failed to build BiomonLanClient tokio runtime");
 
         let label_clone = Arc::clone(&endpoint_label);
+        let override_clone = Arc::clone(&hub_override);
         let state_clone = Arc::clone(&state);
         let blackout_clone = Arc::clone(&manual_blackout);
         let reachable_clone = Arc::clone(&hub_reachable);
@@ -633,8 +806,9 @@ impl BiomonLanClient {
                         active_phase: "ORBIT".to_string(),
                     });
 
-                // 2. Obtain verified TCP connection (direct override, UDP beacon, or /24 fallback)
-                let outcome = if let Some(ref raw_override) = cfg.hub_override_addr {
+                // 2. Obtain verified TCP connection (direct override, UDP+Gateway race, or subnet sweep)
+                let active_override = override_clone.read().ok().and_then(|g| g.clone());
+                let outcome = if let Some(ref raw_override) = active_override {
                     if let Ok(mut lbl) = label_clone.write() {
                         *lbl = raw_override.clone();
                     }
@@ -649,6 +823,9 @@ impl BiomonLanClient {
                             HandshakeOutcome::Failed => DiscoveryResult::NoneFound,
                         }
                     } else {
+                        if let Ok(mut lbl) = label_clone.write() {
+                            *lbl = format!("INVALID IP: {raw_override}");
+                        }
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         DiscoveryResult::NoneFound
                     }
@@ -664,26 +841,21 @@ impl BiomonLanClient {
                     if let Ok(mut lbl) = label_clone.write() {
                         *lbl = lan_hint;
                     }
-                    if let Some(hub_addr) = discover_via_udp(cfg.discovery_port, &cur_id).await {
-                        match verify_tcp_hub(
-                            hub_addr,
-                            &cur_id,
-                            &device_id,
-                            Duration::from_millis(1500),
-                        )
-                        .await
-                        {
-                            HandshakeOutcome::Accepted(s, ack) => {
-                                DiscoveryResult::Connected(hub_addr, s, ack)
-                            }
-                            HandshakeOutcome::Rejected(msg) => DiscoveryResult::Rejected(msg),
-                            HandshakeOutcome::Failed => {
-                                discover_via_subnet_tcp(cfg.tcp_fallback_port, &cur_id, &device_id)
-                                    .await
-                            }
+                    match discover_udp_or_gateway(
+                        cfg.discovery_port,
+                        cfg.tcp_fallback_port,
+                        &cur_id,
+                        &device_id,
+                    )
+                    .await
+                    {
+                        found @ (DiscoveryResult::Connected(..) | DiscoveryResult::Rejected(..)) => {
+                            found
                         }
-                    } else {
-                        discover_via_subnet_tcp(cfg.tcp_fallback_port, &cur_id, &device_id).await
+                        DiscoveryResult::NoneFound => {
+                            discover_via_subnet_tcp(cfg.tcp_fallback_port, &cur_id, &device_id)
+                                .await
+                        }
                     }
                 };
 
@@ -840,6 +1012,8 @@ impl BiomonLanClient {
 
         Self {
             endpoint_label,
+            hub_override,
+            default_tcp_port,
             state,
             manual_blackout,
             hub_reachable,
@@ -903,6 +1077,22 @@ impl BiomonLanClient {
 
     pub fn trigger_probe(&self) {
         self.trigger_rescan();
+    }
+
+    pub fn hub_override(&self) -> Option<String> {
+        self.hub_override.read().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_hub_override(&self, raw: Option<&str>) {
+        let normalized = raw.and_then(|s| normalize_hub_override(s, self.default_tcp_port));
+        if let Ok(mut ov) = self.hub_override.write() {
+            *ov = normalized.clone();
+        }
+        if let Ok(mut lbl) = self.endpoint_label.write() {
+            *lbl = normalized.unwrap_or_else(|| "SEARCHING LAN...".to_string());
+        }
+        self.manual_blackout.store(false, Ordering::SeqCst);
+        self.rescan_notify.notify_waiters();
     }
 
     pub fn set_identity(&self, crew_id: &str, callsign: &str, active_phase: &str) {
@@ -1062,5 +1252,65 @@ mod tests {
         assert!(!ack2.delivered);
         assert_eq!(client.frames_sent(), 1);
         assert!(received_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_runtime_hub_override_switch() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.spawn(async move {
+            let tokio_listener = TcpListener::from_std(listener).unwrap();
+            if let Ok((sock, _)) = tokio_listener.accept().await {
+                let (r, mut w) = tokio::io::split(sock);
+                let mut lines = BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                        && v["packet_type"] == "HELLO"
+                    {
+                        let ack = HubDownlinkMessage::HelloAck {
+                            hub_id: "HOTSPOT-HUB".to_string(),
+                            mission_phase: "ORBIT".to_string(),
+                            distance_au: 1.32,
+                            one_way_light_min: 11.0,
+                            assigned_crew_id: "AST-02".to_string(),
+                            assigned_callsign: "ARES-2".to_string(),
+                        };
+                        let s = serde_json::to_string(&ack).unwrap() + "\n";
+                        let _ = w.write_all(s.as_bytes()).await;
+                        let _ = w.flush().await;
+                    }
+                }
+            }
+        });
+
+        let client = BiomonLanClient::new("127.0.0.1:0");
+        assert_eq!(client.connection_state(), ConnectionState::Offline);
+
+        client.set_hub_override(Some(&addr.ip().to_string()));
+        assert_eq!(
+            client.hub_override().as_deref(),
+            Some(format!("127.0.0.1:{DEFAULT_TCP_PORT}").as_str())
+        );
+
+        client.set_hub_override(Some(&addr.to_string()));
+        assert_eq!(
+            client.hub_override().as_deref(),
+            Some(addr.to_string().as_str())
+        );
+
+        for _ in 0..80 {
+            if client.connection_state() == ConnectionState::Online {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(client.connection_state(), ConnectionState::Online);
+        assert_eq!(client.crew_id(), "AST-02");
+
+        client.set_hub_override(None);
+        assert!(client.hub_override().is_none());
     }
 }

@@ -27,12 +27,13 @@ pub fn run_desktop() -> eframe::Result {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    let db_dir = app.internal_data_path();
     let mut native_options = eframe::NativeOptions::default();
     native_options.android_app = Some(app);
 
     let _ = eframe::run_native(
         "AEGIS-BIO Biomon",
         native_options,
-        Box::new(|cc| Ok(Box::new(BiomonApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(BiomonApp::new_with_db_dir(cc, db_dir.clone())))),
     );
 }

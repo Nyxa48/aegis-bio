@@ -213,6 +213,48 @@ pub struct DatasetProvenance {
     pub imported_at_utc: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct LanTelemetryInsert<'a> {
+    pub astronaut_id: &'a str,
+    pub phase_code: &'a str,
+    pub mission_day: i64,
+    pub edge_seq_id: i64,
+    pub recorded_at_utc: &'a str,
+    pub received_at_utc: &'a str,
+    pub hr_bpm: f64,
+    pub sbp_mmhg: f64,
+    pub resp_brpm: f64,
+    pub spo2_pct: f64,
+    pub tissue_o2_pct: Option<f64>,
+    pub blood_n2_idx: Option<f64>,
+    pub g_load: f64,
+    pub imu_activity_idx: f64,
+    pub cabin_co2_ppm: f64,
+    pub cabin_temp_c: Option<f64>,
+    pub cabin_humidity_pct: Option<f64>,
+    pub cabin_pressure_kpa: Option<f64>,
+    pub cabin_o2_pct: Option<f64>,
+    pub cabin_motion_idx: f64,
+    pub suit_pressure_kpa: Option<f64>,
+    pub suit_humidity_pct: Option<f64>,
+    pub eva_elapsed_sec: i64,
+    pub radiation_usv_hr: f64,
+    pub daily_sodium_mg: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LanCrewInputInsert<'a> {
+    pub astronaut_id: &'a str,
+    pub edge_input_id: i64,
+    pub logged_at_utc: &'a str,
+    pub mission_day: i64,
+    pub input_type: &'a str,
+    pub reference_code: Option<&'a str>,
+    pub consumption_pct: Option<i64>,
+    pub notes: Option<&'a str>,
+    pub received_at_utc: &'a str,
+}
+
 pub struct Database {
     conn: Connection,
     path: PathBuf,
@@ -305,6 +347,28 @@ impl Database {
                 81.0_f64,
                 183.0_f64,
                 39_i64,
+                "M",
+                "ORBIT",
+                "ONLINE",
+            ),
+            (
+                "AST-05",
+                "ARES-5 (PS VEGA)",
+                "PAYLOAD SPECIALIST",
+                69.0_f64,
+                172.0_f64,
+                31_i64,
+                "F",
+                "ORBIT",
+                "ONLINE",
+            ),
+            (
+                "AST-06",
+                "ARES-6 (FE ATLAS)",
+                "FLIGHT ENGINEER",
+                76.0_f64,
+                178.0_f64,
+                37_i64,
                 "M",
                 "ORBIT",
                 "ONLINE",
@@ -427,18 +491,32 @@ impl Database {
         // 3. Seed mission_ephemeris & NASA reference/research datasets via nasa_seed.sql
         self.seed_nasa_data()?;
 
-        // 4. Seed initial telemetry_history rows for the crew roster
+        // 4. Seed initial telemetry_history rows for the crew roster (sodium aligned with sans_daily_history)
         let crew_telemetry = [
-            ("AST-01", "ORBIT", 88.0, 118.0, 14.0, 98.0, 1150.0, 0.42),
-            ("AST-02", "ORBIT", 74.0, 120.0, 13.0, 99.0, 1120.0, 0.38),
-            ("AST-03", "ORBIT", 92.0, 114.0, 15.0, 97.5, 1180.0, 0.41),
-            ("AST-04", "ORBIT", 79.0, 122.0, 13.5, 98.5, 1100.0, 0.39),
+            (
+                "AST-01", "ORBIT", 88.0, 118.0, 14.0, 98.0, 1150.0, 0.42, 1450.0,
+            ),
+            (
+                "AST-02", "ORBIT", 74.0, 120.0, 13.0, 99.0, 1120.0, 0.38, 1280.0,
+            ),
+            (
+                "AST-03", "ORBIT", 92.0, 114.0, 15.0, 97.5, 1180.0, 0.41, 2420.0,
+            ),
+            (
+                "AST-04", "ORBIT", 79.0, 122.0, 13.5, 98.5, 1100.0, 0.39, 1310.0,
+            ),
+            (
+                "AST-05", "ORBIT", 72.0, 116.0, 13.0, 98.8, 1120.0, 0.37, 1390.0,
+            ),
+            (
+                "AST-06", "ORBIT", 81.0, 120.0, 14.0, 98.4, 1140.0, 0.40, 1420.0,
+            ),
         ];
 
-        for (ast_id, phase, hr, sbp, resp, spo2, co2, rad) in crew_telemetry {
+        for (ast_id, phase, hr, sbp, resp, spo2, co2, rad, na_mg) in crew_telemetry {
             let shock_idx = calc::calc_shock_index(hr, sbp);
             let ortho_risk = calc::calc_orthostatic_risk(hr, sbp, 1.0);
-            let (_, sans_risk) = calc::calc_sans_risk(1140.0, co2, phase);
+            let (_, sans_risk) = calc::calc_sans_risk(na_mg, co2, phase);
 
             self.conn.execute(
                 "INSERT OR IGNORE INTO telemetry_history (
@@ -642,6 +720,24 @@ impl Database {
                 Some(1_i64),
                 "2026-11-14T07:00:00Z",
             ),
+            (
+                "AST-05",
+                1_i64,
+                462.0,
+                480_i64,
+                Some(92.4),
+                Some(2_i64),
+                "2026-11-14T07:00:00Z",
+            ),
+            (
+                "AST-06",
+                1_i64,
+                456.0,
+                480_i64,
+                Some(90.8),
+                Some(2_i64),
+                "2026-11-14T07:00:00Z",
+            ),
         ];
 
         for (ast, day, total, target, eff, awake, comp) in sleeps {
@@ -659,6 +755,8 @@ impl Database {
             ("AST-02", 1_i64, 1280.0, 1120.0, 1360.0, "ORBIT"),
             ("AST-03", 1_i64, 2420.0, 1380.0, 1890.0, "ORBIT"),
             ("AST-04", 1_i64, 1310.0, 1100.0, 1290.0, "ORBIT"),
+            ("AST-05", 1_i64, 1390.0, 1120.0, 1340.0, "ORBIT"),
+            ("AST-06", 1_i64, 1420.0, 1140.0, 1380.0, "ORBIT"),
         ];
 
         for (ast, day, na_mg, avg_co2, max_co2, phase) in sans_rows {
@@ -687,6 +785,8 @@ impl Database {
             ("AST-02", 1_i64, 92.0, 1180.0, 820.0),
             ("AST-03", 1_i64, 62.0, 840.0, 520.0),
             ("AST-04", 1_i64, 95.0, 1240.0, 840.0),
+            ("AST-05", 1_i64, 86.0, 1150.0, 780.0),
+            ("AST-06", 1_i64, 90.0, 1190.0, 800.0),
         ];
 
         for (ast, day, ex_idx, ca_mg, d3_iu) in osteo_rows {
@@ -994,13 +1094,14 @@ impl Database {
     }
 
     pub fn seed_nasa_data(&mut self) -> Result<()> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM dataset_provenance",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM dataset_provenance", [], |row| {
+                    row.get(0)
+                })?;
         if count == 0 {
-            self.conn.execute_batch(include_str!("../data/nasa_seed.sql"))?;
+            self.conn
+                .execute_batch(include_str!("../data/nasa_seed.sql"))?;
         }
         Ok(())
     }
@@ -1205,6 +1306,133 @@ impl Database {
             .map_err(Into::into)
     }
 
+    pub fn update_crew_lan_status(
+        &self,
+        astronaut_id: &str,
+        lan_status: &str,
+        heartbeat_utc: Option<&str>,
+    ) -> Result<()> {
+        if let Some(hb) = heartbeat_utc {
+            self.conn.execute(
+                "UPDATE crew_members SET lan_status = ?1, last_heartbeat_utc = ?2 WHERE astronaut_id = ?3",
+                params![lan_status, hb, astronaut_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE crew_members SET lan_status = ?1 WHERE astronaut_id = ?2",
+                params![lan_status, astronaut_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn upsert_crew_input_from_lan(&self, inp: &LanCrewInputInsert<'_>) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO crew_input_history
+             (astronaut_id, edge_input_id, logged_at_utc, mission_day, input_type, reference_code, consumption_pct, notes, received_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                inp.astronaut_id,
+                inp.edge_input_id,
+                inp.logged_at_utc,
+                inp.mission_day,
+                inp.input_type,
+                inp.reference_code,
+                inp.consumption_pct,
+                inp.notes,
+                inp.received_at_utc,
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn upsert_telemetry_from_lan(&self, t: &LanTelemetryInsert<'_>) -> Result<i64> {
+        let shock_idx = calc::calc_shock_index(t.hr_bpm, t.sbp_mmhg);
+        let ortho_risk = calc::calc_orthostatic_risk(t.hr_bpm, t.sbp_mmhg, t.g_load);
+        let (_, sans_risk) = calc::calc_sans_risk(t.daily_sodium_mg, t.cabin_co2_ppm, t.phase_code);
+
+        self.conn.execute(
+            "INSERT INTO telemetry_history (
+                astronaut_id, phase_code, mission_day, edge_seq_id,
+                recorded_at_utc, received_at_utc,
+                hr_bpm, sbp_mmhg, resp_brpm, spo2_pct, tissue_o2_pct, blood_n2_idx,
+                g_load, imu_activity_idx, cabin_co2_ppm, cabin_temp_c,
+                cabin_humidity_pct, cabin_pressure_kpa, cabin_o2_pct, cabin_motion_idx,
+                suit_pressure_kpa, suit_humidity_pct, eva_elapsed_sec,
+                radiation_usv_hr, shock_index, orthostatic_risk, sans_risk
+            ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23,
+                ?24, ?25, ?26, ?27
+            )
+            ON CONFLICT(astronaut_id, edge_seq_id) DO UPDATE SET
+                phase_code = excluded.phase_code,
+                recorded_at_utc = excluded.recorded_at_utc,
+                received_at_utc = excluded.received_at_utc,
+                hr_bpm = excluded.hr_bpm,
+                sbp_mmhg = excluded.sbp_mmhg,
+                resp_brpm = excluded.resp_brpm,
+                spo2_pct = excluded.spo2_pct,
+                tissue_o2_pct = excluded.tissue_o2_pct,
+                blood_n2_idx = excluded.blood_n2_idx,
+                g_load = excluded.g_load,
+                imu_activity_idx = excluded.imu_activity_idx,
+                cabin_co2_ppm = excluded.cabin_co2_ppm,
+                cabin_temp_c = excluded.cabin_temp_c,
+                cabin_humidity_pct = excluded.cabin_humidity_pct,
+                cabin_pressure_kpa = excluded.cabin_pressure_kpa,
+                cabin_o2_pct = excluded.cabin_o2_pct,
+                cabin_motion_idx = excluded.cabin_motion_idx,
+                suit_pressure_kpa = excluded.suit_pressure_kpa,
+                suit_humidity_pct = excluded.suit_humidity_pct,
+                eva_elapsed_sec = excluded.eva_elapsed_sec,
+                radiation_usv_hr = excluded.radiation_usv_hr,
+                shock_index = excluded.shock_index,
+                orthostatic_risk = excluded.orthostatic_risk,
+                sans_risk = excluded.sans_risk",
+            params![
+                t.astronaut_id,
+                t.phase_code,
+                t.mission_day,
+                t.edge_seq_id,
+                t.recorded_at_utc,
+                t.received_at_utc,
+                t.hr_bpm,
+                t.sbp_mmhg,
+                t.resp_brpm,
+                t.spo2_pct,
+                t.tissue_o2_pct,
+                t.blood_n2_idx,
+                t.g_load,
+                t.imu_activity_idx,
+                t.cabin_co2_ppm,
+                t.cabin_temp_c,
+                t.cabin_humidity_pct,
+                t.cabin_pressure_kpa,
+                t.cabin_o2_pct,
+                t.cabin_motion_idx,
+                t.suit_pressure_kpa,
+                t.suit_humidity_pct,
+                t.eva_elapsed_sec,
+                t.radiation_usv_hr,
+                shock_idx,
+                ortho_risk,
+                sans_risk,
+            ],
+        )?;
+        let _ = self.update_crew_lan_status(t.astronaut_id, "ONLINE", Some(t.received_at_utc));
+        let rec_id: i64 = self.conn.query_row(
+            "SELECT record_id FROM telemetry_history WHERE astronaut_id = ?1 AND edge_seq_id = ?2",
+            params![t.astronaut_id, t.edge_seq_id],
+            |r| r.get(0),
+        )?;
+        Ok(rec_id)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -1223,7 +1451,7 @@ mod tests {
             .expect("second seed_demo_data must succeed");
 
         let crew = db.load_crew_members().expect("load crew");
-        assert_eq!(crew.len(), 4);
+        assert_eq!(crew.len(), 6);
 
         let food = db.load_food_catalog().expect("load food");
         assert!(food.len() >= 4);
@@ -1266,13 +1494,24 @@ mod tests {
         assert!(!labs.is_empty());
 
         let sleeps = db.load_sleep_summaries().expect("load sleep");
-        assert_eq!(sleeps.len(), 4);
+        assert_eq!(sleeps.len(), 6);
 
         let sans = db.load_sans_history().expect("load sans");
-        assert_eq!(sans.len(), 4);
+        assert_eq!(sans.len(), 6);
+
+        let ast03_tel = db
+            .load_latest_telemetry("AST-03")
+            .expect("ast03 tel")
+            .expect("AST-03 telemetry exists");
+        let ast03_sans = sans
+            .iter()
+            .find(|s| s.astronaut_id == "AST-03")
+            .expect("AST-03 sans history");
+        assert_eq!(ast03_tel.sans_risk, ast03_sans.sans_risk);
+        assert_eq!(ast03_tel.sans_risk, "MODERATE");
 
         let osteo = db.load_osteo_history().expect("load osteo");
-        assert_eq!(osteo.len(), 4);
+        assert_eq!(osteo.len(), 6);
 
         let inputs = db.load_crew_input_history().expect("load crew inputs");
         assert!(!inputs.is_empty());
@@ -1315,7 +1554,12 @@ mod tests {
             if err > max_err_min {
                 max_err_min = err;
             }
-            assert!(err < 0.01, "light delay mismatch on {}: {}", row.mission_date, err);
+            assert!(
+                err < 0.01,
+                "light delay mismatch on {}: {}",
+                row.mission_date,
+                err
+            );
         }
         let (interp_au, interp_min) =
             calc::interpolate_ephemeris(ephem[0].distance_au, ephem[1].distance_au, 0.5);
@@ -1432,9 +1676,18 @@ mod tests {
         let all_obs = db
             .load_research_lab_observations(None, None, 30_000)
             .expect("all obs");
-        let above = all_obs.iter().filter(|o| o.status_flag == "ABOVE_REF").count();
-        let below = all_obs.iter().filter(|o| o.status_flag == "BELOW_REF").count();
-        let in_rng = all_obs.iter().filter(|o| o.status_flag == "IN_RANGE").count();
+        let above = all_obs
+            .iter()
+            .filter(|o| o.status_flag == "ABOVE_REF")
+            .count();
+        let below = all_obs
+            .iter()
+            .filter(|o| o.status_flag == "BELOW_REF")
+            .count();
+        let in_rng = all_obs
+            .iter()
+            .filter(|o| o.status_flag == "IN_RANGE")
+            .count();
         let no_ref = all_obs.iter().filter(|o| o.status_flag == "NO_REF").count();
         println!(
             "[RESEARCH LABS] total={}, IN_RANGE={}, ABOVE_REF={}, BELOW_REF={}, NO_REF={}",
@@ -1457,5 +1710,75 @@ mod tests {
         );
         assert!(n2_idx > 1.5);
         assert_eq!(osteo_tier, "LOW");
+    }
+
+    #[test]
+    fn test_lan_telemetry_and_input_dedup() {
+        let mut db = Database::open_in_memory_fallback();
+        db.seed_demo_data().expect("seed");
+
+        let inserted = db
+            .upsert_crew_input_from_lan(&LanCrewInputInsert {
+                astronaut_id: "AST-01",
+                edge_input_id: 999,
+                logged_at_utc: "2026-11-15T01:00:00Z",
+                mission_day: 1,
+                input_type: "MEAL_LOG",
+                reference_code: Some("FOOD-01"),
+                consumption_pct: Some(50),
+                notes: Some("LAN sync test"),
+                received_at_utc: "2026-11-15T01:00:01Z",
+            })
+            .expect("insert crew input");
+        assert!(inserted);
+
+        let dup = db
+            .upsert_crew_input_from_lan(&LanCrewInputInsert {
+                astronaut_id: "AST-01",
+                edge_input_id: 999,
+                logged_at_utc: "2026-11-15T01:00:00Z",
+                mission_day: 1,
+                input_type: "MEAL_LOG",
+                reference_code: Some("FOOD-01"),
+                consumption_pct: Some(50),
+                notes: Some("LAN sync test"),
+                received_at_utc: "2026-11-15T01:00:01Z",
+            })
+            .expect("dup crew input");
+        assert!(!dup);
+
+        let rec_id = db
+            .upsert_telemetry_from_lan(&LanTelemetryInsert {
+                astronaut_id: "AST-01",
+                phase_code: "EVA",
+                mission_day: 1,
+                edge_seq_id: 42,
+                recorded_at_utc: "2026-11-15T01:05:00Z",
+                received_at_utc: "2026-11-15T01:05:01Z",
+                hr_bpm: 112.0,
+                sbp_mmhg: 126.0,
+                resp_brpm: 19.0,
+                spo2_pct: 97.5,
+                tissue_o2_pct: Some(92.0),
+                blood_n2_idx: Some(1.12),
+                g_load: 1.0,
+                imu_activity_idx: 0.65,
+                cabin_co2_ppm: 1200.0,
+                cabin_temp_c: Some(21.5),
+                cabin_humidity_pct: Some(44.0),
+                cabin_pressure_kpa: Some(101.3),
+                cabin_o2_pct: Some(20.9),
+                cabin_motion_idx: 0.4,
+                suit_pressure_kpa: Some(29.6),
+                suit_humidity_pct: Some(41.0),
+                eva_elapsed_sec: 1500,
+                radiation_usv_hr: 0.55,
+                daily_sodium_mg: 1450.0,
+            })
+            .expect("upsert telemetry");
+        assert!(rec_id > 0);
+        let latest = db.load_latest_telemetry("AST-01").unwrap().unwrap();
+        assert_eq!(latest.edge_seq_id, 42);
+        assert!((latest.hr_bpm - 112.0).abs() < 1e-6);
     }
 }

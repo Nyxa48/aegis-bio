@@ -4,11 +4,47 @@ use crate::db::{
     NewCrewInput, OfflineProtocol, OsteoporosisDailyState, SansDailyState, SleepEpoch,
     UnsyncedCounts,
 };
-use crate::net::{BiomonLanClient, ConnectionState, OutboundFrame};
+use crate::net::{BiomonLanClient, ConnectionState, HubDownlinkMessage, LinkEvent, OutboundFrame};
 use crate::ui;
 use crate::ui_components;
 use eframe::egui;
 use serde_json::json;
+use std::path::PathBuf;
+
+const CREW_PRESETS: [(&str, &str, f64, f64, i64, &str); 6] = [
+    ("AST-01", "ARES-1", 78.0, 180.0, 36, "M"),
+    ("AST-02", "ARES-2", 74.0, 176.0, 34, "M"),
+    ("AST-03", "ARES-3", 64.0, 168.0, 33, "F"),
+    ("AST-04", "ARES-4", 81.0, 183.0, 39, "M"),
+    ("AST-05", "ARES-5", 69.0, 172.0, 31, "F"),
+    ("AST-06", "ARES-6", 76.0, 178.0, 37, "M"),
+];
+
+fn requested_crew_id_from_env_or_args() -> &'static str {
+    let env_val = std::env::var("AEGIS_CREW_ID").ok();
+    let mut args = std::env::args();
+    let mut arg_val: Option<String> = None;
+    while let Some(arg) = args.next() {
+        if arg == "--crew"
+            && let Some(val) = args.next()
+        {
+            arg_val = Some(val);
+            break;
+        } else if let Some(val) = arg.strip_prefix("--crew=") {
+            arg_val = Some(val.to_string());
+            break;
+        }
+    }
+    let raw = arg_val.or(env_val).unwrap_or_default().to_ascii_uppercase();
+    match raw.as_str() {
+        "AST-02" => "AST-02",
+        "AST-03" => "AST-03",
+        "AST-04" => "AST-04",
+        "AST-05" => "AST-05",
+        "AST-06" => "AST-06",
+        _ => "AST-01",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -176,6 +212,9 @@ pub struct AppState {
     pub selected_meal_pct: u8,
     pub selected_protocol_idx: usize,
     pub status_banner: String,
+    pub hub_endpoint: String,
+    pub pending_sync_batch: Option<u64>,
+    pub last_live_push_time: f64,
     pub snapshot: UiSnapshot,
     pub db: Database,
     pub lan_client: BiomonLanClient,
@@ -183,31 +222,47 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::new_with_db_dir(cc, None)
+    }
+
+    pub fn new_with_db_dir(cc: &eframe::CreationContext<'_>, db_dir: Option<PathBuf>) -> Self {
         ui_components::install_aerospace_fonts(&cc.egui_ctx);
         ui::apply_mandated_visuals(&cc.egui_ctx);
 
-        let mut db =
-            Database::open_default().unwrap_or_else(|_| Database::open_in_memory_fallback());
+        let mut db = match db_dir {
+            Some(dir) => Database::open_in_dir(dir),
+            None => Database::open_default(),
+        }
+        .unwrap_or_else(|_| Database::open_in_memory_fallback());
         let _ = db.seed_demo_data();
 
-        let lan_client = BiomonLanClient::new("127.0.0.1:7878");
-        let comms_state = lan_client.connection_state();
+        let target_crew = requested_crew_id_from_env_or_args();
+        let preset = CREW_PRESETS
+            .iter()
+            .find(|p| p.0 == target_crew)
+            .copied()
+            .unwrap_or(CREW_PRESETS[0]);
 
         let config = db
-            .load_astronaut_config("AST-01")
-            .ok()
-            .flatten()
+            .ensure_crew_profile(
+                preset.0, preset.1, preset.2, preset.3, preset.4, preset.5, "ORBIT",
+            )
             .unwrap_or(AstronautConfig {
-                astronaut_id: "AST-01".to_string(),
-                callsign: "ARES-1".to_string(),
-                weight: 78.0,
-                height: 180.0,
-                age: 36,
-                sex: "M".to_string(),
+                astronaut_id: preset.0.to_string(),
+                callsign: preset.1.to_string(),
+                weight: preset.2,
+                height: preset.3,
+                age: preset.4,
+                sex: preset.5.to_string(),
                 active_phase: "ORBIT".to_string(),
                 mission_start_utc: "2026-11-14T00:00:00Z".to_string(),
                 sleep_target_min: 480,
             });
+
+        let lan_client =
+            BiomonLanClient::new_auto(&config.astronaut_id, &config.callsign, &config.active_phase);
+        let comms_state = lan_client.connection_state();
+        let hub_endpoint = lan_client.target_hub_addr();
 
         let latest = db
             .load_latest_telemetry(&config.astronaut_id)
@@ -275,7 +330,8 @@ impl AppState {
         let unsynced = db.count_unsynced().unwrap_or_default();
 
         // NASA JPL Horizons 2026-11-14 -> 2026-11-15 Earth-Mars ephemeris (AU)
-        let (earth_mars_au, one_way_light_min) = calc::interpolate_ephemeris(1.324362, 1.315854, 0.0);
+        let (earth_mars_au, one_way_light_min) =
+            calc::interpolate_ephemeris(1.324362, 1.315854, 0.0);
 
         let mut snapshot = UiSnapshot {
             astronaut_id: config.astronaut_id,
@@ -345,6 +401,9 @@ impl AppState {
             selected_meal_pct: 100,
             selected_protocol_idx: 0,
             status_banner: format!("{} WAL READY", db_label.to_ascii_uppercase()),
+            hub_endpoint,
+            pending_sync_batch: None,
+            last_live_push_time: -1.0,
             snapshot,
             db,
             lan_client,
@@ -371,7 +430,7 @@ impl AppState {
             .cloned()
         {
             let pct = self.selected_meal_pct as i64;
-            let _ = self.db.insert_crew_input(&NewCrewInput {
+            let saved = self.db.insert_crew_input(&NewCrewInput {
                 astronaut_id: &self.snapshot.astronaut_id,
                 mission_day: self.snapshot.mission_day,
                 input_type: "MEAL_LOG",
@@ -381,22 +440,34 @@ impl AppState {
                 phase: &self.snapshot.active_phase,
                 avg_co2_ppm: self.snapshot.cabin_co2_ppm,
             });
-            let _ = self.lan_client.queue_frame(OutboundFrame {
-                packet_type: "CREW_INPUT".to_string(),
-                payload: json!({
-                    "astronaut_id": self.snapshot.astronaut_id,
-                    "input_type": "MEAL_LOG",
-                    "reference_code": food.food_id,
-                    "consumption_pct": pct,
-                }),
-            });
+            if let Ok(saved_row) = saved {
+                let batch_id = self.lan_client.next_batch_id();
+                let sent = self.lan_client.queue_frame(OutboundFrame {
+                    crew_id: self.snapshot.astronaut_id.clone(),
+                    packet_type: "CREW_INPUT".to_string(),
+                    payload: json!({
+                        "batch_id": batch_id,
+                        "astronaut_id": self.snapshot.astronaut_id,
+                        "edge_input_id": saved_row.input_id,
+                        "logged_at_utc": saved_row.logged_at_utc,
+                        "mission_day": saved_row.mission_day,
+                        "input_type": "MEAL_LOG",
+                        "reference_code": food.food_id,
+                        "consumption_pct": pct,
+                        "notes": food.item_name,
+                    }),
+                });
+                if sent {
+                    self.pending_sync_batch = Some(batch_id);
+                }
+            }
             self.refresh_db_state();
             self.status_banner = format!("LOGGED {} AT {}%", food.food_id, pct);
         }
     }
 
     pub fn log_hydration_pouch(&mut self) {
-        let _ = self.db.insert_crew_input(&NewCrewInput {
+        let saved = self.db.insert_crew_input(&NewCrewInput {
             astronaut_id: &self.snapshot.astronaut_id,
             mission_day: self.snapshot.mission_day,
             input_type: "FLUID_LOG",
@@ -406,14 +477,28 @@ impl AppState {
             phase: &self.snapshot.active_phase,
             avg_co2_ppm: self.snapshot.cabin_co2_ppm,
         });
-        let _ = self.lan_client.queue_frame(OutboundFrame {
-            packet_type: "CREW_INPUT".to_string(),
-            payload: json!({
-                "astronaut_id": self.snapshot.astronaut_id,
-                "input_type": "FLUID_LOG",
-                "fluid_ml": 250,
-            }),
-        });
+        if let Ok(saved_row) = saved {
+            let batch_id = self.lan_client.next_batch_id();
+            let sent = self.lan_client.queue_frame(OutboundFrame {
+                crew_id: self.snapshot.astronaut_id.clone(),
+                packet_type: "CREW_INPUT".to_string(),
+                payload: json!({
+                    "batch_id": batch_id,
+                    "astronaut_id": self.snapshot.astronaut_id,
+                    "edge_input_id": saved_row.input_id,
+                    "logged_at_utc": saved_row.logged_at_utc,
+                    "mission_day": saved_row.mission_day,
+                    "input_type": "FLUID_LOG",
+                    "reference_code": "POUCH-250ML",
+                    "consumption_pct": 100,
+                    "notes": "250 ML ELECTROLYTE POUCH",
+                    "fluid_ml": 250,
+                }),
+            });
+            if sent {
+                self.pending_sync_batch = Some(batch_id);
+            }
+        }
         self.refresh_db_state();
         self.status_banner = "LOGGED +250 ML HYDRATION POUCH".to_string();
     }
@@ -440,23 +525,142 @@ impl AppState {
 
     pub fn sync_queued_packets(&mut self) {
         let queued = self.snapshot.unsynced.total();
-        let _ = self.lan_client.queue_frame(OutboundFrame {
+        if self.snapshot.comms_state != ConnectionState::Online {
+            self.status_banner = format!("OFFLINE — {} REC BUFFERED IN WAL", queued);
+            return;
+        }
+        let unsynced_inputs = self
+            .db
+            .load_unsynced_inputs(&self.snapshot.astronaut_id)
+            .unwrap_or_default();
+        let inputs_json: Vec<serde_json::Value> = unsynced_inputs
+            .iter()
+            .map(|inp| {
+                json!({
+                    "edge_input_id": inp.input_id,
+                    "logged_at_utc": inp.logged_at_utc,
+                    "mission_day": inp.mission_day,
+                    "input_type": inp.input_type,
+                    "reference_code": inp.reference_code,
+                    "consumption_pct": inp.consumption_pct,
+                    "notes": inp.notes,
+                })
+            })
+            .collect();
+
+        let batch_id = self.lan_client.next_batch_id();
+        let sent = self.lan_client.queue_frame(OutboundFrame {
+            crew_id: self.snapshot.astronaut_id.clone(),
             packet_type: "TELEMETRY_BATCH_SYNC".to_string(),
             payload: json!({
+                "batch_id": batch_id,
+                "seq_id": self.snapshot.seq_id,
                 "astronaut_id": self.snapshot.astronaut_id,
                 "callsign": self.snapshot.callsign,
+                "active_phase": self.snapshot.active_phase,
                 "mission_day": self.snapshot.mission_day,
                 "hr_bpm": self.snapshot.hr_bpm,
                 "sbp_mmhg": self.snapshot.sbp_mmhg,
+                "resp_brpm": self.snapshot.resp_brpm,
                 "spo2_pct": self.snapshot.spo2_pct,
+                "tissue_o2_pct": self.snapshot.tissue_o2_pct,
+                "blood_n2_idx": self.snapshot.blood_n2_idx,
+                "g_load": self.snapshot.g_load,
+                "imu_activity_idx": self.snapshot.imu_activity_idx,
+                "skin_temp_c": self.snapshot.skin_temp_c,
                 "radiation_usv_hr": self.snapshot.radiation_usv_hr,
                 "cabin_co2_ppm": self.snapshot.cabin_co2_ppm,
+                "cabin_o2_pct": self.snapshot.cabin_o2_pct,
+                "suit_pressure_kpa": self.snapshot.suit_pressure_kpa,
+                "suit_humidity_pct": self.snapshot.suit_humidity_pct,
+                "eva_elapsed_sec": self.snapshot.eva_elapsed_sec,
+                "hub_distance_m": self.snapshot.hub_distance_m,
+                "heading_deg": self.snapshot.heading_deg,
+                "timestamp_utc": self.snapshot.recorded_at_utc,
                 "flushed_records": queued,
+                "inputs": inputs_json,
             }),
         });
-        let _ = self.db.mark_all_synced();
+        if sent {
+            self.pending_sync_batch = Some(batch_id);
+            self.status_banner = format!("SENT BATCH #{batch_id} ({queued} REC) — AWAITING ACK");
+        } else {
+            self.status_banner = format!("OFFLINE — {queued} REC HELD IN WAL");
+        }
+    }
+
+    pub fn rescan_lan(&mut self) {
+        self.lan_client.trigger_rescan();
+        self.hub_endpoint = self.lan_client.target_hub_addr();
+        self.status_banner = "SCANNING LOCAL NETWORK FOR HUB...".to_string();
+    }
+
+    fn adopt_crew_identity(&mut self, crew_id: &str, callsign_hint: &str) {
+        let preset = CREW_PRESETS
+            .iter()
+            .find(|p| p.0 == crew_id)
+            .copied()
+            .unwrap_or((
+                "AST-01",
+                if callsign_hint.is_empty() { "ARES-1" } else { callsign_hint },
+                75.0,
+                176.0,
+                35,
+                "M",
+            ));
+        let callsign = if callsign_hint.is_empty() {
+            preset.1
+        } else {
+            callsign_hint
+        };
+        let cfg = self
+            .db
+            .ensure_crew_profile(
+                crew_id,
+                callsign,
+                preset.2,
+                preset.3,
+                preset.4,
+                preset.5,
+                &self.snapshot.active_phase,
+            )
+            .unwrap_or(AstronautConfig {
+                astronaut_id: crew_id.to_string(),
+                callsign: callsign.to_string(),
+                weight: preset.2,
+                height: preset.3,
+                age: preset.4,
+                sex: preset.5.to_string(),
+                active_phase: self.snapshot.active_phase.clone(),
+                mission_start_utc: "2026-11-14T00:00:00Z".to_string(),
+                sleep_target_min: 480,
+            });
+        self.snapshot.astronaut_id = cfg.astronaut_id.clone();
+        self.snapshot.callsign = cfg.callsign.clone();
+        self.snapshot.weight_kg = cfg.weight;
+        self.snapshot.height_cm = cfg.height;
+        self.snapshot.age_yr = cfg.age;
+        self.snapshot.sex = cfg.sex.clone();
         self.refresh_db_state();
-        self.status_banner = format!("SYNCED {} RECORDS TO HUB", queued);
+        self.snapshot.recompute_derived();
+    }
+
+    pub fn cycle_crew_identity(&mut self) {
+        let cur_idx = CREW_PRESETS
+            .iter()
+            .position(|p| p.0 == self.snapshot.astronaut_id)
+            .unwrap_or(0);
+        let next = CREW_PRESETS[(cur_idx + 1) % CREW_PRESETS.len()];
+        self.adopt_crew_identity(next.0, next.1);
+        self.lan_client.set_identity(
+            &self.snapshot.astronaut_id,
+            &self.snapshot.callsign,
+            &self.snapshot.active_phase,
+        );
+        self.status_banner = format!(
+            "IDENTITY REQUESTED: {} ({})",
+            self.snapshot.astronaut_id, self.snapshot.callsign
+        );
     }
 
     pub fn acknowledge_alerts(&mut self) {
@@ -464,15 +668,148 @@ impl AppState {
         self.refresh_db_state();
         self.status_banner = "LOCAL ALERTS ACKNOWLEDGED".to_string();
     }
-}
 
-impl eframe::App for AppState {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn push_live_telemetry(&mut self) {
+        self.snapshot.seq_id += 1;
+        let _ = self.lan_client.queue_frame(OutboundFrame {
+            crew_id: self.snapshot.astronaut_id.clone(),
+            packet_type: "TELEMETRY_LIVE".to_string(),
+            payload: json!({
+                "seq_id": self.snapshot.seq_id,
+                "mission_day": self.snapshot.mission_day,
+                "active_phase": self.snapshot.active_phase,
+                "hr_bpm": self.snapshot.hr_bpm,
+                "sbp_mmhg": self.snapshot.sbp_mmhg,
+                "resp_brpm": self.snapshot.resp_brpm,
+                "spo2_pct": self.snapshot.spo2_pct,
+                "tissue_o2_pct": self.snapshot.tissue_o2_pct,
+                "blood_n2_idx": self.snapshot.blood_n2_idx,
+                "g_load": self.snapshot.g_load,
+                "imu_activity_idx": self.snapshot.imu_activity_idx,
+                "skin_temp_c": self.snapshot.skin_temp_c,
+                "radiation_usv_hr": self.snapshot.radiation_usv_hr,
+                "cabin_co2_ppm": self.snapshot.cabin_co2_ppm,
+                "cabin_o2_pct": self.snapshot.cabin_o2_pct,
+                "suit_pressure_kpa": self.snapshot.suit_pressure_kpa,
+                "suit_humidity_pct": self.snapshot.suit_humidity_pct,
+                "eva_elapsed_sec": self.snapshot.eva_elapsed_sec,
+                "hub_distance_m": self.snapshot.hub_distance_m,
+                "heading_deg": self.snapshot.heading_deg,
+                "timestamp_utc": self.snapshot.recorded_at_utc,
+            }),
+        });
+    }
+
+    fn poll_network(&mut self, time_sec: f64) {
+        self.hub_endpoint = self.lan_client.target_hub_addr();
+
+        while let Some(ev) = self.lan_client.try_recv_event() {
+            match ev {
+                LinkEvent::Connected(addr) => {
+                    self.snapshot.comms_state = ConnectionState::Online;
+                    self.hub_endpoint = addr.clone();
+                    self.last_live_push_time = -1.0;
+                    self.status_banner = format!("HUB CONNECTED: {addr}");
+                    self.snapshot.recompute_derived();
+                }
+                LinkEvent::Disconnected => {
+                    self.snapshot.comms_state = ConnectionState::Offline;
+                    self.status_banner = "HUB LINK OFFLINE — LOCAL WAL BUFFERING".to_string();
+                    self.snapshot.recompute_derived();
+                }
+                LinkEvent::Downlink(msg) => match msg {
+                    HubDownlinkMessage::HelloAck {
+                        hub_id,
+                        mission_phase,
+                        distance_au,
+                        one_way_light_min,
+                        assigned_crew_id,
+                        assigned_callsign,
+                    } => {
+                        if !assigned_crew_id.is_empty()
+                            && assigned_crew_id != self.snapshot.astronaut_id
+                        {
+                            self.adopt_crew_identity(&assigned_crew_id, &assigned_callsign);
+                        }
+                        self.snapshot.earth_mars_au = distance_au;
+                        self.snapshot.one_way_light_min = one_way_light_min;
+                        if !mission_phase.is_empty() && self.snapshot.active_phase != mission_phase
+                        {
+                            self.set_mission_phase(&mission_phase);
+                        } else {
+                            self.snapshot.recompute_derived();
+                        }
+                        if self.snapshot.unsynced.total() > 0 {
+                            self.sync_queued_packets();
+                        }
+                        self.status_banner = format!(
+                            "SLOT {} ({}) -> {} ({})",
+                            self.snapshot.astronaut_id,
+                            self.snapshot.callsign,
+                            hub_id,
+                            mission_phase
+                        );
+                    }
+                    HubDownlinkMessage::SlotFull { max_slots, reason } => {
+                        self.snapshot.comms_state = ConnectionState::Offline;
+                        self.snapshot.recompute_derived();
+                        self.status_banner = format!("{reason} (MAX {max_slots})");
+                    }
+                    HubDownlinkMessage::SyncAck {
+                        batch_id,
+                        synced_records,
+                    } => {
+                        let _ = self.db.mark_all_synced();
+                        self.pending_sync_batch = None;
+                        self.refresh_db_state();
+                        self.status_banner =
+                            format!("HUB ACK #{batch_id} ({synced_records} REC SYNCED)");
+                    }
+                    HubDownlinkMessage::PhaseSync {
+                        phase,
+                        apply_to_all,
+                        target_crew_id,
+                    } => {
+                        if apply_to_all
+                            || target_crew_id.as_deref()
+                                == Some(self.snapshot.astronaut_id.as_str())
+                        {
+                            self.set_mission_phase(&phase);
+                            self.status_banner = format!("HUB PHASE SYNC: {phase}");
+                        }
+                    }
+                    HubDownlinkMessage::EphemerisSync {
+                        distance_au,
+                        one_way_light_min,
+                        ..
+                    } => {
+                        self.snapshot.earth_mars_au = distance_au;
+                        self.snapshot.one_way_light_min = one_way_light_min;
+                        self.snapshot.recompute_derived();
+                    }
+                },
+            }
+        }
+
         let live_comms = self.lan_client.connection_state();
         if self.snapshot.comms_state != live_comms {
             self.snapshot.comms_state = live_comms;
             self.snapshot.recompute_derived();
         }
+
+        if self.snapshot.comms_state == ConnectionState::Online
+            && (self.last_live_push_time < 0.0 || time_sec - self.last_live_push_time >= 1.0)
+        {
+            self.last_live_push_time = time_sec;
+            self.push_live_telemetry();
+        }
+    }
+}
+
+impl eframe::App for AppState {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let time_sec = ui.input(|i| i.time);
+        self.poll_network(time_sec);
         ui::render(ui, self);
     }
 }

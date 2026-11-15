@@ -1,11 +1,11 @@
 use crate::calc::{self, PanelAlertState, SafetyEvalInput};
 use crate::db::{
     CrewInputHistoryRecord, CrewMember, Database, DatasetProvenance, FoodCatalogItem, HubLabReport,
-    MissionEphemeris, NewSurgeonIncident, OsteoporosisDailyHistory, ReferenceEdaPoint,
-    ReferenceRadiationPoint, ResearchLabObservation, SansDailyHistory, SleepDailySummary,
-    SurgeonIncident,
+    LanCrewInputInsert, LanTelemetryInsert, MissionEphemeris, NewSurgeonIncident,
+    OsteoporosisDailyHistory, ReferenceEdaPoint, ReferenceRadiationPoint, ResearchLabObservation,
+    SansDailyHistory, SleepDailySummary, SurgeonIncident,
 };
-use crate::net::{HubLanServer, InboundPacket};
+use crate::net::{HubDownlinkMessage, HubLanServer, HubNetEvent, InboundPacket};
 use crate::ui;
 use crate::ui_components;
 use eframe::egui;
@@ -104,12 +104,14 @@ impl StressScenario {
 #[derive(Debug, Clone)]
 pub struct CrewSummarySnapshot {
     pub member: CrewMember,
+    pub peer_addr: Option<String>,
     pub record_id: i64,
     pub mission_day: i64,
     pub edge_seq_id: i64,
     pub recorded_at_utc: String,
     pub received_at_utc: String,
     pub hr_bpm: f64,
+    pub resting_hr_bpm: f64,
     pub sbp_mmhg: f64,
     pub resp_brpm: f64,
     pub spo2_pct: f64,
@@ -127,6 +129,7 @@ pub struct CrewSummarySnapshot {
     pub suit_humidity_pct: Option<f64>,
     pub eva_elapsed_sec: i64,
     pub radiation_usv_hr: f64,
+    pub daily_sodium_mg: f64,
     pub shock_index: f64,
     pub orthostatic_risk: String,
     pub sans_risk: String,
@@ -143,14 +146,17 @@ impl CrewSummarySnapshot {
         self.shock_index = calc::calc_shock_index(self.hr_bpm, self.sbp_mmhg);
         self.orthostatic_risk =
             calc::calc_orthostatic_risk(self.hr_bpm, self.sbp_mmhg, self.g_load).to_string();
-        let (_, sans_tier) =
-            calc::calc_sans_risk(1450.0, self.cabin_co2_ppm, &self.member.active_phase_code);
+        let (_, sans_tier) = calc::calc_sans_risk(
+            self.daily_sodium_mg,
+            self.cabin_co2_ppm,
+            &self.member.active_phase_code,
+        );
         self.sans_risk = sans_tier.to_string();
         let comms_online = self.member.lan_status == "ONLINE";
         self.alerts = calc::evaluate_safety(&SafetyEvalInput {
             phase: &self.member.active_phase_code,
             hr_bpm: self.hr_bpm,
-            resting_hr_bpm: 68.0,
+            resting_hr_bpm: self.resting_hr_bpm,
             sbp_mmhg: self.sbp_mmhg,
             spo2_pct: self.spo2_pct,
             tissue_o2_pct: self.tissue_o2_pct,
@@ -187,6 +193,11 @@ pub struct HubUiSnapshot {
     pub food_catalog: Vec<FoodCatalogItem>,
     pub db_path: String,
     pub lan_ready: bool,
+    pub lan_discovery_ready: bool,
+    pub lan_local_ips: Vec<String>,
+    pub lan_tcp_port: u16,
+    pub lan_discovery_port: u16,
+    pub lan_error: Option<String>,
     pub connected_clients: usize,
     pub packets_received: u64,
     pub last_packet_info: String,
@@ -248,12 +259,18 @@ impl AppState {
         let _ = db.seed_demo_data();
 
         let lan_server = HubLanServer::start("0.0.0.0:7878");
-        let snapshot = Self::build_snapshot_from_db(&db, &lan_server, 0, "NONE");
+        let snapshot = Self::build_snapshot_from_db(&db, &lan_server, 0, "AWAITING LAN CLIENTS");
         let initial_phase = snapshot
             .crew_summaries
             .first()
             .map(|c| MissionPhase::from_code(&c.member.active_phase_code))
             .unwrap_or(MissionPhase::Orbit);
+
+        lan_server.update_hub_metadata(
+            initial_phase.label(),
+            snapshot.distance_au,
+            snapshot.one_way_light_min,
+        );
 
         Self {
             screen: HubScreen::MainMenu,
@@ -274,6 +291,7 @@ impl AppState {
         last_packet_info: &str,
     ) -> HubUiSnapshot {
         let members = db.load_crew_members().unwrap_or_default();
+        let peers = lan_server.online_crew_peers();
         let food_catalog = db.load_food_catalog().unwrap_or_default();
         let unacked_incidents = db.count_unacked_incidents().unwrap_or(0);
         let surgeon_incidents = db.load_surgeon_incidents().unwrap_or_default();
@@ -305,14 +323,28 @@ impl AppState {
             .unwrap_or_else(|| calc::calc_one_way_light_min(distance_au));
 
         let mut crew_summaries = Vec::with_capacity(members.len());
-        let headings = [38.0_f32, 112.0, 215.0, 304.0];
-        let distances = [222.0_f64, 185.0, 340.0, 95.0];
+        let headings = [38.0_f32, 112.0, 215.0, 304.0, 154.0, 268.0];
+        let distances = [222.0_f64, 185.0, 340.0, 95.0, 148.0, 276.0];
 
-        for (i, member) in members.into_iter().enumerate() {
+        for (i, mut member) in members.into_iter().enumerate() {
+            let peer_addr = peers.get(&member.astronaut_id).cloned();
+            member.lan_status = if peer_addr.is_some() {
+                "ONLINE".to_string()
+            } else {
+                "OFFLINE".to_string()
+            };
+
             let latest = db
                 .load_latest_telemetry(&member.astronaut_id)
                 .ok()
                 .flatten();
+
+            let daily_sodium_mg = sans_history
+                .iter()
+                .filter(|s| s.astronaut_id == member.astronaut_id)
+                .max_by_key(|s| s.mission_day)
+                .map(|s| s.sodium_mg_total)
+                .unwrap_or(1450.0);
 
             let record_id = latest
                 .as_ref()
@@ -373,19 +405,21 @@ impl AppState {
                 .as_ref()
                 .map(|t| t.sans_risk.clone())
                 .unwrap_or_else(|| {
-                    calc::calc_sans_risk(1140.0, cabin_co2_ppm, &member.active_phase_code)
+                    calc::calc_sans_risk(daily_sodium_mg, cabin_co2_ppm, &member.active_phase_code)
                         .1
                         .to_string()
                 });
 
             crew_summaries.push(CrewSummarySnapshot {
                 member,
+                peer_addr,
                 record_id,
                 mission_day,
                 edge_seq_id,
                 recorded_at_utc,
                 received_at_utc,
                 hr_bpm,
+                resting_hr_bpm: 68.0,
                 sbp_mmhg,
                 resp_brpm,
                 spo2_pct,
@@ -403,6 +437,7 @@ impl AppState {
                 suit_humidity_pct,
                 eva_elapsed_sec,
                 radiation_usv_hr,
+                daily_sodium_mg,
                 shock_index,
                 orthostatic_risk,
                 sans_risk,
@@ -435,6 +470,11 @@ impl AppState {
             food_catalog,
             db_path: db.path().display().to_string(),
             lan_ready: lan_server.is_ready(),
+            lan_discovery_ready: lan_server.discovery_ready(),
+            lan_local_ips: lan_server.local_ipv4s().to_vec(),
+            lan_tcp_port: lan_server.tcp_port(),
+            lan_discovery_port: lan_server.discovery_port(),
+            lan_error: lan_server.last_error(),
             connected_clients: lan_server.connected_clients(),
             packets_received,
             last_packet_info: last_packet_info.to_string(),
@@ -447,19 +487,35 @@ impl AppState {
     pub fn set_mission_phase(&mut self, phase: MissionPhase) {
         self.mission_phase = phase;
         let phase_code = phase.label();
-        if self.apply_phase_to_all {
+        let target_crew_id = if self.apply_phase_to_all {
             for crew in &mut self.snapshot.crew_summaries {
                 crew.member.active_phase_code = phase_code.to_string();
                 let _ = self
                     .db
                     .update_crew_phase(&crew.member.astronaut_id, phase_code);
             }
+            None
         } else if let Some(crew) = self.snapshot.crew_summaries.get_mut(self.selected_crew_idx) {
             crew.member.active_phase_code = phase_code.to_string();
             let _ = self
                 .db
                 .update_crew_phase(&crew.member.astronaut_id, phase_code);
-        }
+            Some(crew.member.astronaut_id.clone())
+        } else {
+            None
+        };
+
+        self.lan_server.update_hub_metadata(
+            phase_code,
+            self.snapshot.distance_au,
+            self.snapshot.one_way_light_min,
+        );
+        self.lan_server
+            .broadcast_downlink(HubDownlinkMessage::PhaseSync {
+                phase: phase_code.to_string(),
+                apply_to_all: self.apply_phase_to_all,
+                target_crew_id,
+            });
         self.snapshot.recompute_alerts();
     }
 
@@ -597,57 +653,361 @@ impl AppState {
     }
 
     pub fn simulate_inbound_biomon_packet(&mut self) {
-        let crew_id = self
+        let (crew_id, next_seq, day) = self
             .snapshot
             .crew_summaries
             .get(self.selected_crew_idx)
-            .map(|c| c.member.astronaut_id.clone())
-            .unwrap_or_else(|| "AST-01".to_string());
+            .map(|c| {
+                (
+                    c.member.astronaut_id.clone(),
+                    c.edge_seq_id + 1,
+                    c.mission_day,
+                )
+            })
+            .unwrap_or_else(|| ("AST-01".to_string(), 2, 1));
         let pkt = InboundPacket {
             crew_id,
-            packet_type: "TELEMETRY_SYNC".to_string(),
+            packet_type: "TELEMETRY_BATCH_SYNC".to_string(),
             payload: serde_json::json!({
+                "batch_id": 9999,
+                "seq_id": next_seq,
+                "mission_day": day,
+                "active_phase": self.mission_phase.label(),
                 "hr_bpm": 94.0,
                 "sbp_mmhg": 121.0,
                 "spo2_pct": 98.5,
-                "timestamp_utc": "2026-11-14T20:20:00Z"
+                "timestamp_utc": "2026-11-14T20:20:00Z",
+                "flushed_records": 1,
             }),
         };
         self.lan_server.inject_test_packet(pkt);
     }
 
+    fn apply_telemetry_payload(
+        crew: &mut CrewSummarySnapshot,
+        payload: &serde_json::Value,
+        peer_label: Option<&str>,
+    ) {
+        if let Some(label) = peer_label {
+            crew.peer_addr = Some(label.to_string());
+            crew.member.lan_status = "ONLINE".to_string();
+        }
+        if let Some(hr) = payload.get("hr_bpm").and_then(|v| v.as_f64()) {
+            crew.hr_bpm = hr;
+        }
+        if let Some(sbp) = payload.get("sbp_mmhg").and_then(|v| v.as_f64()) {
+            crew.sbp_mmhg = sbp;
+        }
+        if let Some(resp) = payload.get("resp_brpm").and_then(|v| v.as_f64()) {
+            crew.resp_brpm = resp;
+        }
+        if let Some(spo2) = payload.get("spo2_pct").and_then(|v| v.as_f64()) {
+            crew.spo2_pct = spo2;
+        }
+        if let Some(tis) = payload.get("tissue_o2_pct").and_then(|v| v.as_f64()) {
+            crew.tissue_o2_pct = Some(tis);
+        }
+        if let Some(n2) = payload.get("blood_n2_idx").and_then(|v| v.as_f64()) {
+            crew.blood_n2_idx = Some(n2);
+        }
+        if let Some(g) = payload.get("g_load").and_then(|v| v.as_f64()) {
+            crew.g_load = g;
+        }
+        if let Some(imu) = payload.get("imu_activity_idx").and_then(|v| v.as_f64()) {
+            crew.imu_activity_idx = imu;
+        }
+        if let Some(rad) = payload.get("radiation_usv_hr").and_then(|v| v.as_f64()) {
+            crew.radiation_usv_hr = rad;
+        }
+        if let Some(co2) = payload.get("cabin_co2_ppm").and_then(|v| v.as_f64()) {
+            crew.cabin_co2_ppm = co2;
+        }
+        if let Some(o2) = payload.get("cabin_o2_pct").and_then(|v| v.as_f64()) {
+            crew.cabin_o2_pct = Some(o2);
+        }
+        if let Some(sp) = payload.get("suit_pressure_kpa").and_then(|v| v.as_f64()) {
+            crew.suit_pressure_kpa = Some(sp);
+        }
+        if let Some(sh) = payload.get("suit_humidity_pct").and_then(|v| v.as_f64()) {
+            crew.suit_humidity_pct = Some(sh);
+        }
+        if let Some(eva) = payload.get("eva_elapsed_sec").and_then(|v| v.as_i64()) {
+            crew.eva_elapsed_sec = eva;
+        }
+        if let Some(temp) = payload.get("skin_temp_c").and_then(|v| v.as_f64()) {
+            crew.skin_temp_c = temp;
+        }
+        if let Some(dist) = payload.get("hub_distance_m").and_then(|v| v.as_f64()) {
+            crew.hub_distance_m = dist;
+        }
+        if let Some(hdg) = payload.get("heading_deg").and_then(|v| v.as_f64()) {
+            crew.heading_deg = hdg as f32;
+        }
+        if let Some(day) = payload.get("mission_day").and_then(|v| v.as_i64()) {
+            crew.mission_day = day;
+        }
+        if let Some(seq) = payload.get("seq_id").and_then(|v| v.as_i64()) {
+            crew.edge_seq_id = crew.edge_seq_id.max(seq);
+        } else {
+            crew.edge_seq_id += 1;
+        }
+        if let Some(phase) = payload.get("active_phase").and_then(|v| v.as_str()) {
+            crew.member.active_phase_code = phase.to_string();
+        }
+        if let Some(ts) = payload.get("timestamp_utc").and_then(|v| v.as_str()) {
+            crew.member.last_heartbeat_utc = ts.to_string();
+            crew.recorded_at_utc = ts.to_string();
+            crew.received_at_utc = ts.to_string();
+        }
+    }
+
+    fn persist_crew_input_value(
+        &self,
+        crew_id: &str,
+        fallback_day: i64,
+        val: &serde_json::Value,
+    ) -> bool {
+        let edge_input_id = val
+            .get("edge_input_id")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(1)
+            });
+        let logged_at_utc = val
+            .get("logged_at_utc")
+            .and_then(|v| v.as_str())
+            .unwrap_or("2026-11-14T20:20:00Z");
+        let mission_day = val
+            .get("mission_day")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(fallback_day);
+        let input_type = val
+            .get("input_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("MEAL_LOG");
+        let reference_code = val.get("reference_code").and_then(|v| v.as_str());
+        let consumption_pct = val.get("consumption_pct").and_then(|v| v.as_i64());
+        let notes = val.get("notes").and_then(|v| v.as_str());
+
+        self.db
+            .upsert_crew_input_from_lan(&LanCrewInputInsert {
+                astronaut_id: crew_id,
+                edge_input_id,
+                logged_at_utc,
+                mission_day,
+                input_type,
+                reference_code,
+                consumption_pct,
+                notes,
+                received_at_utc: logged_at_utc,
+            })
+            .unwrap_or(false)
+    }
+
     fn poll_network(&mut self) {
         self.snapshot.lan_ready = self.lan_server.is_ready();
+        self.snapshot.lan_discovery_ready = self.lan_server.discovery_ready();
+        self.snapshot.lan_error = self.lan_server.last_error();
         self.snapshot.connected_clients = self.lan_server.connected_clients();
+
         let mut changed = false;
-        while let Some(pkt) = self.lan_server.try_recv_packet() {
-            self.snapshot.packets_received += 1;
-            self.snapshot.last_packet_info = format!(
-                "{} // {} @ 2026-11-14T20:20:00Z",
-                pkt.crew_id, pkt.packet_type
-            );
-            if let Some(crew) = self
-                .snapshot
-                .crew_summaries
-                .iter_mut()
-                .find(|c| c.member.astronaut_id == pkt.crew_id)
-            {
-                if let Some(hr) = pkt.payload.get("hr_bpm").and_then(|v| v.as_f64()) {
-                    crew.hr_bpm = hr;
+        let mut refresh_inputs = false;
+
+        while let Some(ev) = self.lan_server.try_recv_event() {
+            match ev {
+                HubNetEvent::ClientConnected {
+                    peer,
+                    crew_id,
+                    callsign,
+                } => {
+                    let label = format!("{peer} ({callsign})");
+                    if let Some(crew) = self
+                        .snapshot
+                        .crew_summaries
+                        .iter_mut()
+                        .find(|c| c.member.astronaut_id == crew_id)
+                    {
+                        crew.member.lan_status = "ONLINE".to_string();
+                        crew.peer_addr = Some(label.clone());
+                    }
+                    let _ = self.db.update_crew_lan_status(&crew_id, "ONLINE", None);
+                    self.snapshot.last_packet_info = format!("{crew_id} // CONNECTED ({label})");
+                    changed = true;
                 }
-                if let Some(sbp) = pkt.payload.get("sbp_mmhg").and_then(|v| v.as_f64()) {
-                    crew.sbp_mmhg = sbp;
+                HubNetEvent::ClientDisconnected { peer, crew_id } => {
+                    if !self.lan_server.crew_has_active_session(&crew_id) {
+                        if let Some(crew) = self
+                            .snapshot
+                            .crew_summaries
+                            .iter_mut()
+                            .find(|c| c.member.astronaut_id == crew_id)
+                        {
+                            crew.member.lan_status = "OFFLINE".to_string();
+                            crew.peer_addr = None;
+                        }
+                        let _ = self.db.update_crew_lan_status(&crew_id, "OFFLINE", None);
+                    }
+                    self.snapshot.last_packet_info = format!("{crew_id} // DISCONNECTED ({peer})");
+                    changed = true;
                 }
-                if let Some(spo2) = pkt.payload.get("spo2_pct").and_then(|v| v.as_f64()) {
-                    crew.spo2_pct = spo2;
+                HubNetEvent::Packet { peer, packet: pkt } => {
+                    self.snapshot.packets_received += 1;
+                    let ts_label = pkt
+                        .payload
+                        .get("timestamp_utc")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("LIVE");
+                    self.snapshot.last_packet_info =
+                        format!("{} // {} @ {}", pkt.crew_id, pkt.packet_type, ts_label);
+
+                    let peer_label = if peer.port() == 0 {
+                        "LOCAL SIM".to_string()
+                    } else {
+                        peer.to_string()
+                    };
+
+                    match pkt.packet_type.as_str() {
+                        "HELLO" | "HEARTBEAT" => {
+                            if let Some(crew) = self
+                                .snapshot
+                                .crew_summaries
+                                .iter_mut()
+                                .find(|c| c.member.astronaut_id == pkt.crew_id)
+                            {
+                                crew.member.lan_status = "ONLINE".to_string();
+                                if crew.peer_addr.is_none() {
+                                    crew.peer_addr = Some(peer_label);
+                                }
+                            }
+                            let _ = self.db.update_crew_lan_status(&pkt.crew_id, "ONLINE", None);
+                        }
+                        "CREW_INPUT" => {
+                            let fallback_day = self
+                                .snapshot
+                                .crew_summaries
+                                .iter()
+                                .find(|c| c.member.astronaut_id == pkt.crew_id)
+                                .map(|c| c.mission_day)
+                                .unwrap_or(1);
+                            if self.persist_crew_input_value(
+                                &pkt.crew_id,
+                                fallback_day,
+                                &pkt.payload,
+                            ) {
+                                refresh_inputs = true;
+                            }
+                            if let Some(batch_id) =
+                                pkt.payload.get("batch_id").and_then(|v| v.as_u64())
+                            {
+                                self.lan_server.send_to_crew(
+                                    &pkt.crew_id,
+                                    HubDownlinkMessage::SyncAck {
+                                        batch_id,
+                                        synced_records: 1,
+                                    },
+                                );
+                            }
+                        }
+                        _ => {
+                            // TELEMETRY_LIVE, TELEMETRY_BATCH_SYNC, TELEMETRY_SYNC
+                            let mut persisted_crew: Option<CrewSummarySnapshot> = None;
+
+                            if let Some(crew) = self
+                                .snapshot
+                                .crew_summaries
+                                .iter_mut()
+                                .find(|c| c.member.astronaut_id == pkt.crew_id)
+                            {
+                                Self::apply_telemetry_payload(
+                                    crew,
+                                    &pkt.payload,
+                                    Some(&peer_label),
+                                );
+                                if pkt.packet_type == "TELEMETRY_BATCH_SYNC"
+                                    || pkt.packet_type == "TELEMETRY_SYNC"
+                                {
+                                    persisted_crew = Some(crew.clone());
+                                }
+                            }
+
+                            if let Some(crew) = persisted_crew {
+                                let _ = self.db.upsert_telemetry_from_lan(&LanTelemetryInsert {
+                                    astronaut_id: &crew.member.astronaut_id,
+                                    phase_code: &crew.member.active_phase_code,
+                                    mission_day: crew.mission_day,
+                                    edge_seq_id: crew.edge_seq_id,
+                                    recorded_at_utc: &crew.recorded_at_utc,
+                                    received_at_utc: &crew.received_at_utc,
+                                    hr_bpm: crew.hr_bpm,
+                                    sbp_mmhg: crew.sbp_mmhg,
+                                    resp_brpm: crew.resp_brpm,
+                                    spo2_pct: crew.spo2_pct,
+                                    tissue_o2_pct: crew.tissue_o2_pct,
+                                    blood_n2_idx: crew.blood_n2_idx,
+                                    g_load: crew.g_load,
+                                    imu_activity_idx: crew.imu_activity_idx,
+                                    cabin_co2_ppm: crew.cabin_co2_ppm,
+                                    cabin_temp_c: crew.cabin_temp_c,
+                                    cabin_humidity_pct: crew.cabin_humidity_pct,
+                                    cabin_pressure_kpa: crew.cabin_pressure_kpa,
+                                    cabin_o2_pct: crew.cabin_o2_pct,
+                                    cabin_motion_idx: crew.cabin_motion_idx,
+                                    suit_pressure_kpa: crew.suit_pressure_kpa,
+                                    suit_humidity_pct: crew.suit_humidity_pct,
+                                    eva_elapsed_sec: crew.eva_elapsed_sec,
+                                    radiation_usv_hr: crew.radiation_usv_hr,
+                                    daily_sodium_mg: crew.daily_sodium_mg,
+                                });
+                            }
+
+                            let mut synced_n = 1_usize;
+                            if let Some(arr) = pkt.payload.get("inputs").and_then(|v| v.as_array())
+                            {
+                                let fallback_day = self
+                                    .snapshot
+                                    .crew_summaries
+                                    .iter()
+                                    .find(|c| c.member.astronaut_id == pkt.crew_id)
+                                    .map(|c| c.mission_day)
+                                    .unwrap_or(1);
+                                for item in arr {
+                                    if self.persist_crew_input_value(
+                                        &pkt.crew_id,
+                                        fallback_day,
+                                        item,
+                                    ) {
+                                        refresh_inputs = true;
+                                    }
+                                    synced_n += 1;
+                                }
+                            }
+
+                            if pkt.packet_type == "TELEMETRY_BATCH_SYNC" {
+                                let batch_id = pkt
+                                    .payload
+                                    .get("batch_id")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(1);
+                                self.lan_server.send_to_crew(
+                                    &pkt.crew_id,
+                                    HubDownlinkMessage::SyncAck {
+                                        batch_id,
+                                        synced_records: synced_n,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    changed = true;
                 }
-                if let Some(ts) = pkt.payload.get("timestamp_utc").and_then(|v| v.as_str()) {
-                    crew.member.last_heartbeat_utc = ts.to_string();
-                    crew.received_at_utc = ts.to_string();
-                }
-                crew.edge_seq_id += 1;
             }
-            changed = true;
+        }
+
+        if refresh_inputs {
+            self.snapshot.crew_inputs = self.db.load_crew_input_history().unwrap_or_default();
         }
         if changed {
             self.snapshot.recompute_alerts();

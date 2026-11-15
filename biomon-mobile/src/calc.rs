@@ -4,6 +4,11 @@ pub const BASAL_KCAL_PER_MIN: f64 = 1.2;
 pub const HALDANE_HALF_TIME_MIN: f64 = 360.0;
 pub const LIGHT_MIN_PER_AU: f64 = 8.31675;
 
+#[inline]
+fn finite_or(val: f64, fallback: f64) -> f64 {
+    if val.is_finite() { val } else { fallback }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PanelAlertState {
     pub health_danger: bool,
@@ -46,7 +51,8 @@ pub fn calc_kcal_per_sec(hr_bpm: f64, weight_kg: f64, age: i32, sex: &str) -> f6
 /// Evaporative fluid/sweat loss in mL/sec from metabolic rate (`kcal_per_min`) and skin temperature (`skin_temp_c`).
 pub fn calc_sweat_ml_per_sec(kcal_per_min: f64, skin_temp_c: f64) -> f64 {
     let clamped_kcal_min = kcal_per_min.max(BASAL_KCAL_PER_MIN);
-    let thermal_factor = 1.0 + ((skin_temp_c - 33.5).max(-2.0) * 0.12);
+    let temp = finite_or(skin_temp_c, 33.5);
+    let thermal_factor = 1.0 + ((temp - 33.5).max(-2.0) * 0.12);
     let ml_per_min = (clamped_kcal_min * 1.45 * thermal_factor.max(0.5)).max(0.25);
     ml_per_min / 60.0
 }
@@ -60,12 +66,14 @@ pub fn phase_hr_corridor(phase: &str) -> (f64, f64) {
     }
 }
 
-/// Computes Shock Index (`hr_bpm / sbp_mmhg`).
+/// Computes Shock Index (`hr_bpm / sbp_mmhg`), failing high (`9.99`) on non-finite or collapsed SBP (`<= 1.0`).
 pub fn calc_shock_index(hr_bpm: f64, sbp_mmhg: f64) -> f64 {
-    if sbp_mmhg <= 1.0 {
+    if !sbp_mmhg.is_finite() || sbp_mmhg <= 1.0 {
         9.99
+    } else if !hr_bpm.is_finite() {
+        0.0
     } else {
-        hr_bpm / sbp_mmhg
+        hr_bpm.max(0.0) / sbp_mmhg
     }
 }
 
@@ -84,17 +92,25 @@ pub fn calc_orthostatic_risk(hr_bpm: f64, sbp_mmhg: f64, g_load: f64) -> &'stati
 /// 2. Dynamic Phase Thresholds & Danger Overrides (`evaluate_safety`).
 pub fn evaluate_safety(input: &SafetyEvalInput<'_>) -> PanelAlertState {
     let (hr_min, hr_max) = phase_hr_corridor(input.phase);
-    let hr_out_of_corridor = input.hr_bpm < hr_min || input.hr_bpm > hr_max;
-    let hr_spike = input.hr_bpm >= input.resting_hr_bpm + 50.0;
+    let hr_out_of_corridor =
+        !input.hr_bpm.is_finite() || input.hr_bpm < hr_min || input.hr_bpm > hr_max;
+    let hr_spike = input.resting_hr_bpm.is_finite() && input.hr_bpm >= input.resting_hr_bpm + 50.0;
     let shock_index = calc_shock_index(input.hr_bpm, input.sbp_mmhg);
 
-    let hypoxia_spo2 = input.spo2_pct < 92.0;
-    let hypoxia_tissue = input.tissue_o2_pct.is_some_and(|t| t < 85.0);
-    let shock_breach = shock_index > 0.90;
-    let decomp_breach = input.blood_n2_idx.is_some_and(|r| r > 1.50);
+    let hypoxia_spo2 = !input.spo2_pct.is_finite() || input.spo2_pct < 92.0;
+    let hypoxia_tissue = input
+        .tissue_o2_pct
+        .is_some_and(|t| !t.is_finite() || t < 85.0);
+    let shock_breach = !shock_index.is_finite() || shock_index > 0.90;
+    let decomp_breach = input
+        .blood_n2_idx
+        .is_some_and(|r| !r.is_finite() || r > 1.50);
 
     let is_eva = input.phase.eq_ignore_ascii_case("EVA");
-    let suit_loss = is_eva && input.suit_pressure_kpa.is_some_and(|p| p < 25.0);
+    let suit_loss = is_eva
+        && input
+            .suit_pressure_kpa
+            .is_some_and(|p| !p.is_finite() || p < 25.0);
 
     let health_danger = hr_out_of_corridor
         || hr_spike
@@ -104,12 +120,16 @@ pub fn evaluate_safety(input: &SafetyEvalInput<'_>) -> PanelAlertState {
         || decomp_breach
         || suit_loss;
 
-    let hazard_danger = input.radiation_usv_hr > 50.0
+    let hazard_danger = !input.radiation_usv_hr.is_finite()
+        || input.radiation_usv_hr > 50.0
+        || !input.cabin_co2_ppm.is_finite()
         || input.cabin_co2_ppm > 3000.0
-        || input.cabin_o2_pct.is_some_and(|o2| o2 < 19.5)
+        || input
+            .cabin_o2_pct
+            .is_some_and(|o2| !o2.is_finite() || o2 < 19.5)
         || suit_loss;
 
-    let hub_danger = input.hub_distance_m > 1500.0;
+    let hub_danger = !input.hub_distance_m.is_finite() || input.hub_distance_m > 1500.0;
     let comms_danger = !input.comms_online;
 
     PanelAlertState {
@@ -131,9 +151,11 @@ pub fn update_tissue_n2(
     dt_sec: f64,
 ) -> (f64, f64) {
     let k_per_sec = std::f64::consts::LN_2 / (HALDANE_HALF_TIME_MIN * 60.0);
-    let decay = (-k_per_sec * dt_sec.max(0.0)).exp();
-    let updated_p_n2 = inspired_n2_kpa + (current_p_n2_kpa - inspired_n2_kpa) * decay;
-    let denom = suit_pressure_kpa.max(1.0);
+    let decay = (-k_per_sec * finite_or(dt_sec, 0.0).max(0.0)).exp();
+    let cur = finite_or(current_p_n2_kpa, 0.0).max(0.0);
+    let insp = finite_or(inspired_n2_kpa, 0.0).max(0.0);
+    let updated_p_n2 = insp + (cur - insp) * decay;
+    let denom = finite_or(suit_pressure_kpa, 1.0).max(1.0);
     let blood_n2_idx = updated_p_n2 / denom;
     (updated_p_n2, blood_n2_idx)
 }
@@ -142,8 +164,10 @@ pub fn update_tissue_n2(
 ///
 /// Returns `(sans_score, "LOW" | "MODERATE" | "HIGH")`.
 pub fn calc_sans_risk(sodium_mg_total: f64, avg_co2_ppm: f64, phase: &str) -> (f64, &'static str) {
-    let sodium_ratio = (sodium_mg_total.max(0.0) / 3000.0).clamp(0.0, 2.5);
-    let co2_ratio = (avg_co2_ppm.max(0.0) / 3000.0).clamp(0.0, 2.5);
+    let na = finite_or(sodium_mg_total, 0.0).max(0.0);
+    let co2 = finite_or(avg_co2_ppm, 0.0).max(0.0);
+    let sodium_ratio = (na / 3000.0).clamp(0.0, 2.5);
+    let co2_ratio = (co2 / 3000.0).clamp(0.0, 2.5);
     let phase_weight = match phase.to_ascii_uppercase().as_str() {
         "ORBIT" | "EVA" => 1.0,
         _ => 0.85,
@@ -169,9 +193,9 @@ pub fn calc_osteoporosis_risk(
     calcium_mg: f64,
     vit_d3_iu: f64,
 ) -> (f64, &'static str) {
-    let ex_norm = (exercise_load_idx.max(0.0) / 100.0).clamp(0.0, 1.2);
-    let ca_norm = (calcium_mg.max(0.0) / 1200.0).clamp(0.0, 1.2);
-    let d3_norm = (vit_d3_iu.max(0.0) / 800.0).clamp(0.0, 1.2);
+    let ex_norm = (finite_or(exercise_load_idx, 0.0).max(0.0) / 100.0).clamp(0.0, 1.2);
+    let ca_norm = (finite_or(calcium_mg, 0.0).max(0.0) / 1200.0).clamp(0.0, 1.2);
+    let d3_norm = (finite_or(vit_d3_iu, 0.0).max(0.0) / 800.0).clamp(0.0, 1.2);
 
     let protection_score = (ex_norm * 50.0 + ca_norm * 30.0 + d3_norm * 20.0).clamp(0.0, 100.0);
     let osteo_risk = if protection_score >= 70.0 {
@@ -186,13 +210,13 @@ pub fn calc_osteoporosis_risk(
 
 /// 5. Earth-Mars one-way light delay in minutes (`distance_au * 8.31675`).
 pub fn calc_one_way_light_min(distance_au: f64) -> f64 {
-    distance_au.max(0.0) * LIGHT_MIN_PER_AU
+    finite_or(distance_au, 0.0).max(0.0) * LIGHT_MIN_PER_AU
 }
 
 /// Linear interpolation helper between two ephemeris distance samples (`t` in `0.0..=1.0`).
 /// Returns `(interpolated_distance_au, interpolated_one_way_light_min)`.
 pub fn interpolate_ephemeris(start_au: f64, end_au: f64, t: f64) -> (f64, f64) {
-    let clamped_t = t.clamp(0.0, 1.0);
+    let clamped_t = finite_or(t, 0.0).clamp(0.0, 1.0);
     let dist_au = start_au + (end_au - start_au) * clamped_t;
     (dist_au, calc_one_way_light_min(dist_au))
 }
@@ -277,5 +301,33 @@ mod tests {
         let (interp_au, interp_min) = interpolate_ephemeris(1.40, 1.44, 0.5);
         assert!((interp_au - 1.42).abs() < 1e-6);
         assert!((interp_min - calc_one_way_light_min(1.42)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_nan_and_negative_safety_guards() {
+        assert!((calc_shock_index(80.0, f64::NAN) - 9.99).abs() < 1e-9);
+        assert!((calc_shock_index(-15.0, 120.0) - 0.0).abs() < 1e-9);
+        assert_eq!(calc_orthostatic_risk(80.0, f64::NAN, 1.0), "HIGH");
+
+        let (sans_score, sans_tier) = calc_sans_risk(f64::NAN, 1000.0, "ORBIT");
+        assert!(sans_score.is_finite());
+        assert_eq!(sans_tier, "LOW");
+
+        let nan_safety = evaluate_safety(&SafetyEvalInput {
+            phase: "ORBIT",
+            hr_bpm: f64::NAN,
+            resting_hr_bpm: 68.0,
+            sbp_mmhg: f64::NAN,
+            spo2_pct: f64::NAN,
+            tissue_o2_pct: None,
+            blood_n2_idx: None,
+            radiation_usv_hr: f64::NAN,
+            cabin_co2_ppm: 1200.0,
+            cabin_o2_pct: None,
+            suit_pressure_kpa: None,
+            hub_distance_m: f64::NAN,
+            comms_online: true,
+        });
+        assert!(nan_safety.health_danger && nan_safety.hazard_danger && nan_safety.hub_danger);
     }
 }

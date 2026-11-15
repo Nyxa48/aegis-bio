@@ -158,7 +158,9 @@ pub fn stat_card(
 
     let inner = rect.shrink2(Vec2::new(16.0, 10.0));
     let lbl_sz = 26.0_f32;
-    let val_sz = (h * 0.42).clamp(36.0, 56.0);
+    let chars = value.chars().count().max(1) as f32;
+    let fit_w = inner.width() / (chars * 0.60);
+    let val_sz = (h * 0.42).min(fit_w).clamp(26.0, 56.0);
 
     p.text(
         inner.left_top(),

@@ -104,12 +104,21 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     draw_status_badge(ui, "DB: READY", OUTLINE_VIEW, false);
                     ui.add_space(8.0);
+                    let primary_ip = app
+                        .snapshot
+                        .lan_local_ips
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("127.0.0.1");
                     let lan_label = if app.snapshot.lan_ready {
-                        "LAN :7878 READY"
+                        format!(
+                            "LAN {}:{} ({} ON)",
+                            primary_ip, app.snapshot.lan_tcp_port, app.snapshot.connected_clients
+                        )
                     } else {
-                        "LAN :7878 OFFLINE"
+                        format!("LAN :{} OFFLINE", app.snapshot.lan_tcp_port)
                     };
-                    draw_lan_badge(ui, lan_label, app.snapshot.lan_ready);
+                    draw_lan_badge(ui, &lan_label, app.snapshot.lan_ready);
                     ui.add_space(8.0);
                     draw_status_badge(
                         ui,
@@ -188,15 +197,14 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                         .color(INK_PRIMARY),
                 );
                 ui.add_space(12.0);
+                let ips_str = app.snapshot.lan_local_ips.join(",");
                 ui.label(
                     RichText::new(format!(
-                        "BIND: {} ({}) | CLIENTS: {} | PKTS RX: {}",
-                        app.lan_server.bind_addr(),
-                        if app.snapshot.lan_ready {
-                            "ONLINE"
-                        } else {
-                            "OFFLINE"
-                        },
+                        "HOST: {} TCP:{} UDP:{} ({}) | CLIENTS: {} | RX: {}",
+                        ips_str,
+                        app.snapshot.lan_tcp_port,
+                        app.snapshot.lan_discovery_port,
+                        if app.snapshot.lan_ready { "UP" } else { "DOWN" },
                         app.snapshot.connected_clients,
                         app.snapshot.packets_received
                     ))
@@ -274,11 +282,20 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                                 time_sec,
                                 true,
                             );
+                            let link_tag = if crew.member.lan_status == "ONLINE" {
+                                format!("{} ●", crew.member.astronaut_id)
+                            } else {
+                                format!("{} ○", crew.member.astronaut_id)
+                            };
                             ui.label(
-                                RichText::new(&crew.member.astronaut_id)
+                                RichText::new(link_tag)
                                     .size(16.0)
                                     .strong()
-                                    .color(INK_PRIMARY),
+                                    .color(if crew.member.lan_status == "ONLINE" {
+                                        INK_PRIMARY
+                                    } else {
+                                        OUTLINE_INPUT
+                                    }),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -477,7 +494,10 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             let hr_val = active_crew
                 .map(|cr| format!("{:.0} BPM", cr.hr_bpm))
                 .unwrap_or_else(|| "88 BPM".to_string());
-            let (hr_lo, hr_hi) = calc::phase_hr_corridor(app.mission_phase.label());
+            let active_phase = active_crew
+                .map(|cr| cr.member.active_phase_code.as_str())
+                .unwrap_or(app.mission_phase.label());
+            let (hr_lo, hr_hi) = calc::phase_hr_corridor(active_phase);
             let hr_theme = if app.snapshot.alerts.health_danger {
                 CardTheme::ALERT
             } else {
@@ -507,17 +527,27 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
                 CardTheme::HUB,
             );
 
+            let primary_ip = app
+                .snapshot
+                .lan_local_ips
+                .first()
+                .map(String::as_str)
+                .unwrap_or("127.0.0.1");
+            let lan_val = if app.snapshot.lan_ready {
+                format!("{}:{}", primary_ip, app.snapshot.lan_tcp_port)
+            } else {
+                "OFFLINE".to_string()
+            };
             ui_components::stat_card(
                 &mut c[2],
                 kpi_height,
                 "SURFACE LAN",
-                if app.snapshot.lan_ready {
-                    "ONLINE"
-                } else {
-                    "OFFLINE"
-                },
+                &lan_val,
                 INK_PRIMARY,
-                &format!(":7878 | {} PKTS", app.snapshot.packets_received),
+                &format!(
+                    "{} CLIENTS | {} PKTS",
+                    app.snapshot.connected_clients, app.snapshot.packets_received
+                ),
                 CardTheme::COMMS,
             );
 
@@ -753,14 +783,14 @@ fn suit_zones_for_crew(crew: &CrewSummarySnapshot) -> [Color32; 5] {
     } else {
         OUTLINE_VIEW
     };
-    let scrubber = if crew.cabin_co2_ppm > 3000.0 {
+    let scrubber = if crew.cabin_co2_ppm > 3000.0 || crew.cabin_o2_pct.is_some_and(|o| o < 19.5) {
         OUTLINE_ALERT
     } else {
         OUTLINE_VIEW
     };
     let gloves = if crew
         .suit_pressure_kpa
-        .is_some_and(|p| p < 25.0 && crew.member.active_phase_code == "EVA")
+        .is_some_and(|p| p < 25.0 && crew.member.active_phase_code.eq_ignore_ascii_case("EVA"))
     {
         OUTLINE_ALERT
     } else {
@@ -814,10 +844,11 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!(
-                        "ROLE: {}  |  PHASE: {}  |  LAN: {}  |  HEARTBEAT: {}",
+                        "ROLE: {}  |  PHASE: {}  |  LAN: {} ({})  |  HB: {}",
                         crew.member.role,
                         crew.member.active_phase_code,
                         crew.member.lan_status,
+                        crew.peer_addr.as_deref().unwrap_or("NO PEER"),
                         crew.member.last_heartbeat_utc
                     ))
                     .size(16.0)
@@ -857,7 +888,10 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                         crew.hr_bpm as f32,
                         lo as f32,
                         hi as f32,
-                        if crew.hr_bpm < lo || crew.hr_bpm > hi {
+                        if crew.hr_bpm < lo
+                            || crew.hr_bpm > hi
+                            || crew.hr_bpm >= crew.resting_hr_bpm + 50.0
+                        {
                             OUTLINE_ALERT
                         } else {
                             OUTLINE_VIEW
@@ -899,7 +933,9 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
 
     // Row 1: Primary Cardiorespiratory & Decompression
     ui.columns(4, |c| {
-        let hr_bad = crew.hr_bpm < hr_lo || crew.hr_bpm > hr_hi;
+        let hr_bad = crew.hr_bpm < hr_lo
+            || crew.hr_bpm > hr_hi
+            || crew.hr_bpm >= crew.resting_hr_bpm + 50.0;
         ui_components::stat_card(
             &mut c[0],
             card_h,
@@ -949,7 +985,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
         );
 
         let n2_val = crew.blood_n2_idx.unwrap_or(1.08);
-        let n2_bad = n2_val > 1.50;
+        let n2_bad = n2_val > 1.50 || crew.sans_risk == "HIGH";
         ui_components::stat_card(
             &mut c[3],
             card_h,
@@ -1037,7 +1073,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
     // Row 3: Suit, Kinematics & Metabolic Output
     ui.columns(4, |c| {
         let suit_p = crew.suit_pressure_kpa.unwrap_or(29.6);
-        let suit_bad = crew.member.active_phase_code == "EVA" && suit_p < 25.0;
+        let suit_bad = crew.member.active_phase_code.eq_ignore_ascii_case("EVA") && suit_p < 25.0;
         ui_components::stat_card(
             &mut c[0],
             card_h,
@@ -1106,6 +1142,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
     ui.add_space(14.0);
 
     // Full-Roster Side-by-Side Comparison Grid
+    let mut clicked_roster_idx: Option<usize> = None;
     section_frame(OUTLINE_VIEW).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.label(
@@ -1170,7 +1207,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                         },
                     ));
                     if ui.add(select_btn).clicked() {
-                        app.selected_crew_idx = idx;
+                        clicked_roster_idx = Some(idx);
                     }
 
                     ui.label(
@@ -1220,11 +1257,16 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                             .family(FontFamily::Monospace)
                             .color(col),
                     );
+                    let sans_col = match cr.sans_risk.as_str() {
+                        "HIGH" => OUTLINE_ALERT,
+                        "MODERATE" => OUTLINE_INPUT,
+                        _ => INK_PRIMARY,
+                    };
                     ui.label(
                         RichText::new(&cr.sans_risk)
                             .size(15.0)
                             .family(FontFamily::Monospace)
-                            .color(INK_PRIMARY),
+                            .color(sans_col),
                     );
                     ui.label(
                         RichText::new(format!("{:.0}", cr.cabin_co2_ppm))
@@ -1263,6 +1305,9 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                 }
             });
     });
+    if let Some(idx) = clicked_roster_idx {
+        app.select_crew(idx);
+    }
 }
 
 // ============================================================================
@@ -1538,11 +1583,16 @@ fn render_phase_and_stress_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec:
                             .family(FontFamily::Monospace)
                             .color(text_col),
                     );
+                    let sans_col = match crew.sans_risk.as_str() {
+                        "HIGH" => OUTLINE_ALERT,
+                        "MODERATE" => OUTLINE_INPUT,
+                        _ => INK_PRIMARY,
+                    };
                     ui.label(
                         RichText::new(&crew.sans_risk)
                             .size(15.0)
                             .family(FontFamily::Monospace)
-                            .color(INK_PRIMARY),
+                            .color(sans_col),
                     );
                     ui.label(
                         RichText::new(format!("{:.2}", crew.blood_n2_idx.unwrap_or(1.08)))
@@ -2237,32 +2287,34 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
             });
         });
         ui.add_space(8.0);
+        let host_ips = app.snapshot.lan_local_ips.join(" | ");
         ui.columns(4, |c| {
             ui_components::stat_card(
                 &mut c[0],
-                84.0,
-                "LISTENING ENDPOINT",
-                app.lan_server.bind_addr(),
+                88.0,
+                "HOST LAN IP(S)",
+                &host_ips,
                 INK_PRIMARY,
-                if app.snapshot.lan_ready {
-                    "BIND STATUS: READY"
-                } else {
-                    "BIND STATUS: OFFLINE"
-                },
+                &format!(
+                    "TCP :{} | UDP DISC :{} ({})",
+                    app.snapshot.lan_tcp_port,
+                    app.snapshot.lan_discovery_port,
+                    if app.snapshot.lan_discovery_ready { "OK" } else { "ERR" }
+                ),
                 CardTheme::COMMS,
             );
             ui_components::stat_card(
                 &mut c[1],
-                84.0,
+                88.0,
                 "ACTIVE SUIT CLIENTS",
                 &format!("{}", app.snapshot.connected_clients),
                 INK_PRIMARY,
-                "TCP STREAM SESSIONS",
+                "LIVE TCP SESSIONS",
                 CardTheme::COMMS,
             );
             ui_components::stat_card(
                 &mut c[2],
-                84.0,
+                88.0,
                 "PACKETS RECEIVED",
                 &format!("{}", app.snapshot.packets_received),
                 INK_PRIMARY,
@@ -2271,13 +2323,31 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
             );
             ui_components::stat_card(
                 &mut c[3],
-                84.0,
+                88.0,
                 "LAST SYNC FRAME",
                 &app.snapshot.last_packet_info,
                 INK_PRIMARY,
-                "REALTIME TELEMETRY QUEUE",
-                CardTheme::COMMS,
+                app.snapshot
+                    .lan_error
+                    .as_deref()
+                    .unwrap_or("BIND 0.0.0.0 ACTIVE"),
+                if app.snapshot.lan_error.is_some() {
+                    CardTheme::ALERT
+                } else {
+                    CardTheme::COMMS
+                },
             );
+        });
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            for cr in &app.snapshot.crew_summaries {
+                let online = cr.member.lan_status == "ONLINE";
+                let badge_txt = match &cr.peer_addr {
+                    Some(addr) => format!("{}: ONLINE [{}]", cr.member.astronaut_id, addr),
+                    None => format!("{}: OFFLINE", cr.member.astronaut_id),
+                };
+                draw_lan_badge(ui, &badge_txt, online);
+            }
         });
     });
 

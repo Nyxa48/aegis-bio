@@ -179,6 +179,10 @@ impl Database {
         Self::open(DEFAULT_BIOMON_DB_PATH)
     }
 
+    pub fn open_in_dir<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        Self::open(dir.as_ref().join(DEFAULT_BIOMON_DB_PATH))
+    }
+
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
         let conn = Connection::open(&path_buf)?;
@@ -461,8 +465,10 @@ impl Database {
             )?;
         }
 
-        // 8. Seed daily SANS and Osteoporosis states for day 1
-        let (sans_score, sans_risk) = calc::calc_sans_risk(1140.0, 1150.0, "ORBIT");
+        // 8. Seed daily SANS and Osteoporosis states for day 1 directly from seeded meal totals
+        let day1_nut = self.load_daily_nutrition("AST-01", 1)?;
+        let (sans_score, sans_risk) =
+            calc::calc_sans_risk(day1_nut.sodium_mg_total, 1150.0, "ORBIT");
         self.conn.execute(
             "INSERT OR IGNORE INTO sans_daily_state
              (astronaut_id, mission_day, sodium_mg_total, avg_cabin_co2_ppm, max_cabin_co2_ppm, sans_score, sans_risk, computed_at_utc, is_synced)
@@ -470,7 +476,7 @@ impl Database {
             params![
                 "AST-01",
                 1_i64,
-                1140.0_f64,
+                day1_nut.sodium_mg_total,
                 1150.0_f64,
                 1320.0_f64,
                 sans_score,
@@ -480,7 +486,8 @@ impl Database {
             ],
         )?;
 
-        let (prot_score, osteo_risk) = calc::calc_osteoporosis_risk(82.0, 1050.0, 800.0);
+        let (prot_score, osteo_risk) =
+            calc::calc_osteoporosis_risk(82.0, day1_nut.calcium_mg_total, day1_nut.vit_d3_iu_total);
         self.conn.execute(
             "INSERT OR IGNORE INTO osteoporosis_daily_state
              (astronaut_id, mission_day, exercise_load_idx, calcium_mg_total, vit_d3_iu_total, protection_score, osteo_risk, computed_at_utc, is_synced)
@@ -489,8 +496,8 @@ impl Database {
                 "AST-01",
                 1_i64,
                 82.0_f64,
-                1050.0_f64,
-                800.0_f64,
+                day1_nut.calcium_mg_total,
+                day1_nut.vit_d3_iu_total,
                 prot_score,
                 osteo_risk,
                 "2026-11-14T20:00:00Z",
@@ -682,6 +689,52 @@ impl Database {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    pub fn load_unsynced_inputs(&self, astronaut_id: &str) -> Result<Vec<CrewInput>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT input_id, astronaut_id, logged_at_utc, mission_day, input_type,
+                    reference_code, consumption_pct, notes, is_synced
+             FROM crew_input_queue
+             WHERE astronaut_id = ?1 AND is_synced = 0
+             ORDER BY input_id ASC",
+        )?;
+        let rows = stmt.query_map(params![astronaut_id], |row| {
+            Ok(CrewInput {
+                input_id: row.get(0)?,
+                astronaut_id: row.get(1)?,
+                logged_at_utc: row.get(2)?,
+                mission_day: row.get(3)?,
+                input_type: row.get(4)?,
+                reference_code: row.get(5)?,
+                consumption_pct: row.get(6)?,
+                notes: row.get(7)?,
+                is_synced: row.get(8)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_crew_profile(
+        &self,
+        astronaut_id: &str,
+        callsign: &str,
+        weight: f64,
+        height: f64,
+        age: i64,
+        sex: &str,
+        active_phase: &str,
+    ) -> Result<AstronautConfig> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO astronaut_config
+             (astronaut_id, callsign, weight, height, age, sex, active_phase, mission_start_utc, sleep_target_min)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '2026-11-14T00:00:00Z', 480)",
+            params![astronaut_id, callsign, weight, height, age, sex, active_phase],
+        )?;
+        self.load_astronaut_config(astronaut_id)?
+            .ok_or_else(|| anyhow::anyhow!("failed to load seeded crew profile {astronaut_id}"))
     }
 
     pub fn load_recent_crew_inputs(
@@ -968,8 +1021,20 @@ mod tests {
         assert_eq!(cfg.callsign, "ARES-1");
 
         let nut = db.load_daily_nutrition("AST-01", 1).expect("nutrition");
-        assert!(nut.kcal_total > 600.0);
-        assert!(nut.sodium_mg_total > 500.0);
+        assert!((nut.kcal_total - 690.0).abs() < 1e-6);
+        assert!((nut.sodium_mg_total - 590.0).abs() < 1e-6);
+
+        let sans_before = db
+            .load_sans_state("AST-01", 1)
+            .expect("sans before")
+            .expect("day 1 sans");
+        let osteo_before = db
+            .load_osteo_state("AST-01", 1)
+            .expect("osteo before")
+            .expect("day 1 osteo");
+        assert!((sans_before.sodium_mg_total - nut.sodium_mg_total).abs() < 1e-6);
+        assert!((osteo_before.calcium_mg_total - nut.calcium_mg_total).abs() < 1e-6);
+        assert!((osteo_before.vit_d3_iu_total - nut.vit_d3_iu_total).abs() < 1e-6);
 
         db.insert_crew_input(&NewCrewInput {
             astronaut_id: "AST-01",
@@ -987,6 +1052,12 @@ mod tests {
             .load_daily_nutrition("AST-01", 1)
             .expect("nutrition after");
         assert!((nut_after.fluid_ml_total - (nut.fluid_ml_total + 250.0)).abs() < 1e-4);
+
+        let sans_after = db
+            .load_sans_state("AST-01", 1)
+            .expect("sans after")
+            .expect("day 1 sans after");
+        assert!((sans_after.sans_score - sans_before.sans_score).abs() < 1e-6);
 
         let unsynced = db.count_unsynced().expect("unsynced count");
         assert!(unsynced.total() > 0);

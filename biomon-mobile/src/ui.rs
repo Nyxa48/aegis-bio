@@ -1,4 +1,4 @@
-use crate::app::{AppMode, BiomonApp, QuadrantId, Screen};
+use crate::app::{AppMode, BiomonApp, QuadrantId, Screen, UiSnapshot};
 use crate::calc;
 use crate::icons;
 use crate::net::ConnectionState;
@@ -77,6 +77,37 @@ fn quadrant_border(mode: AppMode, is_alert: bool, time_sec: f64) -> (Color32, f3
     } else {
         (mode_outline_color(mode), BORDER_NOMINAL)
     }
+}
+
+fn suit_zones_for_snapshot(snap: &UiSnapshot) -> [Color32; 5] {
+    let helmet = if snap.spo2_pct < 92.0 || snap.tissue_o2_pct.is_some_and(|t| t < 85.0) {
+        OUTLINE_ALERT
+    } else {
+        OUTLINE_VIEW
+    };
+    let torso = if snap.alerts.health_danger {
+        OUTLINE_ALERT
+    } else {
+        OUTLINE_VIEW
+    };
+    let scrubber = if snap.cabin_co2_ppm > 3000.0 || snap.cabin_o2_pct.is_some_and(|o| o < 19.5) {
+        OUTLINE_ALERT
+    } else {
+        OUTLINE_VIEW
+    };
+    let gloves = if snap.active_phase.eq_ignore_ascii_case("EVA")
+        && snap.suit_pressure_kpa.is_some_and(|p| p < 25.0)
+    {
+        OUTLINE_ALERT
+    } else {
+        INK_PRIMARY
+    };
+    let shield = if snap.radiation_usv_hr > 50.0 {
+        OUTLINE_ALERT
+    } else {
+        OUTLINE_VIEW
+    };
+    [helmet, torso, scrubber, gloves, shield]
 }
 
 fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
@@ -186,7 +217,6 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     );
 
     let suit_p = snap.suit_pressure_kpa.unwrap_or(29.6);
-    let suit_ok = suit_p >= 25.0;
     let row2_y = heart_y + (q_h * 0.16).clamp(44.0, 56.0);
     painter.text(
         Pos2::new(tl_rect.min.x + pad_x, row2_y),
@@ -217,6 +247,8 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
 
     // Safe HR corridor bar near bottom-left of TL quadrant (stopping well left of center circle)
     let (hr_lo, hr_hi) = calc::phase_hr_corridor(&snap.active_phase);
+    let hr_breach =
+        snap.hr_bpm < hr_lo || snap.hr_bpm > hr_hi || snap.hr_bpm >= snap.resting_hr_bpm + 50.0;
     let corridor_w = (q_w - circle_radius - 58.0).clamp(200.0, 360.0);
     let corridor_rect = Rect::from_min_size(
         Pos2::new(tl_rect.min.x + pad_x, tl_rect.max.y - 36.0),
@@ -228,7 +260,7 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         snap.hr_bpm as f32,
         hr_lo as f32,
         hr_hi as f32,
-        if health_alert {
+        if hr_breach {
             OUTLINE_ALERT
         } else {
             OUTLINE_VIEW
@@ -236,28 +268,13 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     );
 
     // 5-zone spacesuit schematic in top-right of Top-Left quadrant (above center circle)
-    let suit_zone_col = if suit_ok { OUTLINE_VIEW } else { OUTLINE_ALERT };
     let suit_h = (q_h * 0.38).clamp(96.0, 128.0);
     let suit_w = suit_h * (110.0 / 130.0);
     let suit_rect = Rect::from_min_size(
         Pos2::new(tl_rect.max.x - suit_w - 18.0, tl_rect.min.y + 14.0),
         Vec2::new(suit_w, suit_h),
     );
-    ui_components::paint_suit_schematic(
-        &painter,
-        suit_rect,
-        [
-            INK_PRIMARY,
-            suit_zone_col,
-            if snap.cabin_co2_ppm > 3000.0 {
-                OUTLINE_ALERT
-            } else {
-                OUTLINE_VIEW
-            },
-            INK_PRIMARY,
-            suit_zone_col,
-        ],
-    );
+    ui_components::paint_suit_schematic(&painter, suit_rect, suit_zones_for_snapshot(snap));
 
     // -------------------------------------------------------------------------
     // 2. TOP-RIGHT: HUB & NAV
@@ -349,10 +366,17 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         INK_PRIMARY
     };
 
+    let slot_tag = if snap.comms_state == ConnectionState::Online {
+        snap.astronaut_id.as_str()
+    } else if app.hub_endpoint.starts_with("SEARCHING") {
+        "AUTO-SLOT"
+    } else {
+        snap.astronaut_id.as_str()
+    };
     painter.text(
         Pos2::new(bl_left, bl_top),
         Align2::LEFT_TOP,
-        "COMMS",
+        format!("COMMS  |  {slot_tag}"),
         FontId::new(32.0, FontFamily::Proportional),
         INK_PRIMARY,
     );
@@ -388,11 +412,22 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         comms_alert,
     );
 
+    let hud_comms_label = if snap.comms_state == ConnectionState::Online {
+        "ONLINE"
+    } else if app.lan_client.is_manual_blackout() {
+        "BLACKOUT"
+    } else if app.hub_endpoint.starts_with("ROSTER FULL") {
+        "ROSTER FULL"
+    } else if app.hub_endpoint.starts_with("SEARCHING") {
+        "SEARCHING"
+    } else {
+        "OFFLINE"
+    };
     painter.text(
         Pos2::new(bl_left + 64.0, bl_bottom),
         Align2::LEFT_BOTTOM,
-        snap.comms_state.label(),
-        FontId::new(54.0, FontFamily::Monospace),
+        hud_comms_label,
+        FontId::new(50.0, FontFamily::Monospace),
         comms_color,
     );
 
@@ -635,7 +670,7 @@ fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: Quadra
         ui.add_space(10.0);
 
         match quadrant {
-            QuadrantId::HealthAndSuit => render_health_detail(ui, app, theme, is_alert),
+            QuadrantId::HealthAndSuit => render_health_detail(ui, app, theme),
             QuadrantId::HubAndNav => render_hub_nav_detail(ui, app, theme, is_alert),
             QuadrantId::CommsAndDisplay => render_comms_detail(ui, app, theme, is_alert),
             QuadrantId::HazardAndEnv => render_hazard_detail(ui, app, theme, is_alert),
@@ -643,20 +678,26 @@ fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: Quadra
     });
 }
 
-fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme, is_alert: bool) {
+fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme) {
     let ctx = ui.ctx().clone();
     if app.mode == AppMode::ViewMode {
         let snap = &app.snapshot;
-        let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
+        let (lo, hi) = calc::phase_hr_corridor(&snap.active_phase);
+        let hr_bad =
+            snap.hr_bpm < lo || snap.hr_bpm > hi || snap.hr_bpm >= snap.resting_hr_bpm + 50.0;
+        let o2_bad = snap.spo2_pct < 92.0 || snap.tissue_o2_pct.is_some_and(|t| t < 85.0);
+        let r_shock_bad = snap.shock_index > 0.90 || snap.blood_n2_idx.is_some_and(|r| r > 1.50);
+        let suit_p = snap.suit_pressure_kpa.unwrap_or(29.6);
+        let suit_bad = snap.active_phase.eq_ignore_ascii_case("EVA") && suit_p < 25.0;
 
-        // Row 1: 4 primary physiological cards
+        // Row 1: 4 primary physiological cards (metric-specific alert coloring)
         ui.columns(4, |cols| {
             ui_components::stat_card(
                 &mut cols[0],
                 116.0,
                 "HEART RATE",
                 &format!("{:.0} BPM", snap.hr_bpm),
-                val_col,
+                if hr_bad { OUTLINE_ALERT } else { INK_PRIMARY },
                 theme,
             );
             ui_components::stat_card(
@@ -664,7 +705,11 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 116.0,
                 "CUFF SBP / RESP",
                 &format!("{:.0} / {:.0}", snap.sbp_mmhg, snap.resp_brpm),
-                INK_PRIMARY,
+                if snap.shock_index > 0.90 {
+                    OUTLINE_ALERT
+                } else {
+                    INK_PRIMARY
+                },
                 theme,
             );
             ui_components::stat_card(
@@ -676,7 +721,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                     snap.spo2_pct,
                     snap.tissue_o2_pct.unwrap_or(93.5)
                 ),
-                val_col,
+                if o2_bad { OUTLINE_ALERT } else { INK_PRIMARY },
                 theme,
             );
             ui_components::stat_card(
@@ -688,7 +733,11 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                     snap.blood_n2_idx.unwrap_or(1.08),
                     snap.shock_index
                 ),
-                val_col,
+                if r_shock_bad {
+                    OUTLINE_ALERT
+                } else {
+                    INK_PRIMARY
+                },
                 theme,
             );
         });
@@ -703,10 +752,10 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 "SUIT P / HUMID",
                 &format!(
                     "{:.1} KPA / {:.0}%",
-                    snap.suit_pressure_kpa.unwrap_or(29.6),
+                    suit_p,
                     snap.suit_humidity_pct.unwrap_or(38.0)
                 ),
-                INK_PRIMARY,
+                if suit_bad { OUTLINE_ALERT } else { INK_PRIMARY },
                 theme,
             );
             ui_components::stat_card(
@@ -752,7 +801,6 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
 
         // Row 3: HR Corridor bar + Suit Schematic + Daily Nutrition & Sleep readout
         ui.columns(2, |cols| {
-            let (lo, hi) = calc::phase_hr_corridor(&snap.active_phase);
             cols[0].label(
                 egui::RichText::new(format!(
                     "PHASE {} HR CORRIDOR ({:.0}–{:.0} BPM)  |  EVA {:02}M:{:02}S",
@@ -774,11 +822,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 snap.hr_bpm as f32,
                 lo as f32,
                 hi as f32,
-                if is_alert {
-                    OUTLINE_ALERT
-                } else {
-                    OUTLINE_VIEW
-                },
+                if hr_bad { OUTLINE_ALERT } else { OUTLINE_VIEW },
             );
             cols[0].add_space(10.0);
             ui_components::stat_card(
@@ -796,13 +840,7 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             );
 
             cols[1].horizontal(|ui| {
-                let suit_ok = snap.suit_pressure_kpa.unwrap_or(29.6) >= 25.0;
-                let zc = if suit_ok { OUTLINE_VIEW } else { OUTLINE_ALERT };
-                ui_components::suit_schematic(
-                    ui,
-                    180.0,
-                    [INK_PRIMARY, zc, OUTLINE_VIEW, INK_PRIMARY, zc],
-                );
+                ui_components::suit_schematic(ui, 180.0, suit_zones_for_snapshot(snap));
                 ui.add_space(12.0);
                 let sleep_ep = snap.sleep_epochs.first();
                 let sleep_txt = sleep_ep
@@ -1191,27 +1229,39 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
     let ctx = ui.ctx().clone();
     let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
 
-    // Row 1: Link State, Target Hub TCP, Unsynced Queue Breakdown, Light Delay
+    let link_text = if app.snapshot.comms_state == ConnectionState::Online {
+        "ONLINE"
+    } else if app.lan_client.is_manual_blackout() {
+        "BLACKOUT"
+    } else if app.hub_endpoint.starts_with("ROSTER FULL") {
+        "ROSTER FULL"
+    } else if app.hub_endpoint.starts_with("SEARCHING") {
+        "SEARCHING"
+    } else {
+        "OFFLINE"
+    };
+
+    // Row 1: Link State, Active Crew Identity, Unsynced Queue, Light Delay
     ui.columns(4, |cols| {
         ui_components::stat_card(
             &mut cols[0],
-            118.0,
+            114.0,
             "SURFACE LAN LINK",
-            app.snapshot.comms_state.label(),
+            link_text,
             val_col,
             theme,
         );
         ui_components::stat_card(
             &mut cols[1],
-            118.0,
-            "HUB ENDPOINT",
-            app.lan_client.target_hub_addr(),
+            114.0,
+            "ACTIVE CREW",
+            &format!("{} ({})", app.snapshot.astronaut_id, app.snapshot.callsign),
             INK_PRIMARY,
             theme,
         );
         ui_components::stat_card(
             &mut cols[2],
-            118.0,
+            114.0,
             "UNSYNCED RECORDS",
             &format!(
                 "{} TOTAL ({} INP)",
@@ -1223,7 +1273,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         );
         ui_components::stat_card(
             &mut cols[3],
-            118.0,
+            114.0,
             "ONE-WAY LIGHT DELAY",
             &format!("{:04.1} MIN", app.snapshot.one_way_light_min),
             INK_PRIMARY,
@@ -1233,26 +1283,21 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
 
     ui.add_space(12.0);
 
-    // Row 2: Queue breakdown + Signal Bars + Recent Crew Input Queue
+    // Row 2: Signal Bars + Discovered Hub Endpoint | Queue Breakdown + TX Frames
     ui.columns(2, |cols| {
         cols[0].horizontal(|ui| {
             ui_components::signal_bars(
                 ui,
-                110.0,
+                108.0,
                 app.snapshot.comms_state == ConnectionState::Online,
             );
-            ui.add_space(14.0);
+            ui.add_space(12.0);
             ui.vertical(|ui| {
                 ui_components::stat_card(
                     ui,
-                    118.0,
-                    "RING BUFFER / SLEEP / DAILY",
-                    &format!(
-                        "{} TEL | {} SLP | {} DLY",
-                        app.snapshot.unsynced.telemetry_frames,
-                        app.snapshot.unsynced.sleep_epochs,
-                        app.snapshot.unsynced.daily_states
-                    ),
+                    114.0,
+                    "DISCOVERED HUB ENDPOINT",
+                    &app.hub_endpoint,
                     INK_PRIMARY,
                     theme,
                 );
@@ -1265,18 +1310,22 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             .first()
             .map(|inp| {
                 format!(
-                    "{} {} ({}%)",
+                    "{} {}",
                     inp.input_type,
-                    inp.reference_code.as_deref().unwrap_or("-"),
-                    inp.consumption_pct.unwrap_or(100)
+                    inp.reference_code.as_deref().unwrap_or("-")
                 )
             })
-            .unwrap_or_else(|| "QUEUE EMPTY".to_string());
+            .unwrap_or_else(|| "NONE".to_string());
         ui_components::stat_card(
             &mut cols[1],
-            118.0,
-            "LATEST LOGGED CREW INPUT",
-            &latest_input_str,
+            114.0,
+            &format!("TX {} PKTS | {}", app.lan_client.frames_sent(), latest_input_str),
+            &format!(
+                "{} TEL | {} SLP | {} DLY",
+                app.snapshot.unsynced.telemetry_frames,
+                app.snapshot.unsynced.sleep_epochs,
+                app.snapshot.unsynced.daily_states
+            ),
             INK_PRIMARY,
             theme,
         );
@@ -1284,15 +1333,15 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
 
     ui.add_space(14.0);
 
-    // Row 3: Interactive Sync / Link Test buttons (available in both modes, >= 140x100)
-    ui.columns(3, |cols| {
+    // Row 3: 4 Glove-Friendly LAN & Identity Actions (>= 140x100 px)
+    ui.columns(4, |cols| {
         let w0 = cols[0].available_width();
         if ui_components::touch_button(
             &mut cols[0],
             &ctx,
             "comms_flush_btn",
             Vec2::new(w0, 118.0),
-            "FLUSH & SYNC QUEUE",
+            "FLUSH SYNC",
             &format!("{} REC", app.snapshot.unsynced.total()),
             false,
             CardTheme::INPUT,
@@ -1303,18 +1352,34 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         }
 
         let w1 = cols[1].available_width();
-        let toggle_lbl = match app.snapshot.comms_state {
-            ConnectionState::Online => "SIMULATE BLACKOUT",
-            ConnectionState::Offline => "RESTORE LAN LINK",
-        };
         if ui_components::touch_button(
             &mut cols[1],
             &ctx,
-            "comms_toggle_link",
+            "comms_rescan_btn",
             Vec2::new(w1, 118.0),
+            "RESCAN LAN",
+            "UDP/TCP",
+            false,
+            CardTheme::INPUT,
+        )
+        .clicked()
+        {
+            app.rescan_lan();
+        }
+
+        let w2 = cols[2].available_width();
+        let toggle_lbl = match app.snapshot.comms_state {
+            ConnectionState::Online => "BLACKOUT",
+            ConnectionState::Offline => "RECONNECT",
+        };
+        if ui_components::touch_button(
+            &mut cols[2],
+            &ctx,
+            "comms_toggle_link",
+            Vec2::new(w2, 118.0),
             toggle_lbl,
             "",
-            app.snapshot.comms_state == ConnectionState::Offline,
+            app.lan_client.is_manual_blackout(),
             CardTheme::INPUT,
         )
         .clicked()
@@ -1325,29 +1390,38 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             app.status_banner = format!("LAN STATE: {}", new_state.label());
         }
 
-        ui_components::stat_card(
-            &mut cols[2],
-            118.0,
-            "FRAMES TRANSMITTED",
-            &format!("{} PKTS", app.lan_client.frames_sent()),
-            INK_PRIMARY,
-            theme,
-        );
+        let w3 = cols[3].available_width();
+        if ui_components::touch_button(
+            &mut cols[3],
+            &ctx,
+            "comms_cycle_crew",
+            Vec2::new(w3, 118.0),
+            "CREW ID",
+            &app.snapshot.astronaut_id,
+            false,
+            CardTheme::INPUT,
+        )
+        .clicked()
+        {
+            app.cycle_crew_identity();
+        }
     });
 }
 
 fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme, is_alert: bool) {
     let ctx = ui.ctx().clone();
-    let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
+    let rad_bad = app.snapshot.radiation_usv_hr > 50.0;
+    let co2_o2_bad =
+        app.snapshot.cabin_co2_ppm > 3000.0 || app.snapshot.cabin_o2_pct.is_some_and(|o| o < 19.5);
 
-    // Row 1: Environmental & SANS telemetry cards
+    // Row 1: Environmental & SANS telemetry cards (metric-specific alert coloring)
     ui.columns(4, |cols| {
         ui_components::stat_card(
             &mut cols[0],
             114.0,
             "RADIATION FLUX",
             &format!("{:.2} USV/H", app.snapshot.radiation_usv_hr),
-            val_col,
+            if rad_bad { OUTLINE_ALERT } else { INK_PRIMARY },
             theme,
         );
         ui_components::stat_card(
@@ -1359,7 +1433,11 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 app.snapshot.cabin_co2_ppm,
                 app.snapshot.cabin_o2_pct.unwrap_or(20.9)
             ),
-            val_col,
+            if co2_o2_bad {
+                OUTLINE_ALERT
+            } else {
+                INK_PRIMARY
+            },
             theme,
         );
         ui_components::stat_card(
@@ -1374,18 +1452,25 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             INK_PRIMARY,
             theme,
         );
-        let sans_str = app
+        let (sans_str, sans_col) = app
             .snapshot
             .sans_state
             .as_ref()
-            .map(|s| format!("{} ({:.0})", s.sans_risk, s.sans_score))
-            .unwrap_or_else(|| "LOW (24)".to_string());
+            .map(|s| {
+                let col = match s.sans_risk.as_str() {
+                    "HIGH" => OUTLINE_ALERT,
+                    "MODERATE" => OUTLINE_INPUT,
+                    _ => INK_PRIMARY,
+                };
+                (format!("{} ({:.0})", s.sans_risk, s.sans_score), col)
+            })
+            .unwrap_or_else(|| ("LOW (23)".to_string(), INK_PRIMARY));
         ui_components::stat_card(
             &mut cols[3],
             114.0,
             "SANS RISK TIER",
             &sans_str,
-            INK_PRIMARY,
+            sans_col,
             theme,
         );
     });

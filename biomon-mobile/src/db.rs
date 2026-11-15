@@ -146,6 +146,45 @@ pub struct OsteoporosisDailyState {
     pub is_synced: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NewTelemetryFrame<'a> {
+    pub astronaut_id: &'a str,
+    pub recorded_at_utc: &'a str,
+    pub mission_day: i64,
+    pub mission_phase: &'a str,
+    pub hr_bpm: f64,
+    pub sbp_mmhg: f64,
+    pub resp_brpm: f64,
+    pub spo2_pct: f64,
+    pub tissue_o2_pct: Option<f64>,
+    pub blood_n2_idx: Option<f64>,
+    pub g_load: f64,
+    pub imu_activity_idx: f64,
+    pub skin_temp_c: f64,
+    pub radiation_usv_hr: f64,
+    pub cabin_co2_ppm: f64,
+    pub cabin_temp_c: Option<f64>,
+    pub cabin_humidity_pct: Option<f64>,
+    pub cabin_pressure_kpa: Option<f64>,
+    pub cabin_o2_pct: Option<f64>,
+    pub cabin_motion_idx: f64,
+    pub suit_pressure_kpa: Option<f64>,
+    pub suit_humidity_pct: Option<f64>,
+    pub eva_elapsed_sec: i64,
+    pub kcal_burn_delta: f64,
+    pub sweat_loss_delta_ml: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct DailyPhysioTotals {
+    pub kcal_burned_total: f64,
+    pub sweat_loss_ml_total: f64,
+    pub frame_count: i64,
+    pub avg_cabin_co2_ppm: f64,
+    pub max_cabin_co2_ppm: f64,
+    pub avg_imu_activity_idx: f64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DailyNutritionTotals {
     pub kcal_total: f64,
@@ -338,6 +377,26 @@ impl Database {
                 180.0,
                 280.0,
                 250.0,
+                1_i64,
+            ),
+            (
+                "FOOD-05",
+                "FREEZE-DRIED SALMON & QUINOA",
+                390.0,
+                230.0,
+                210.0,
+                440.0,
+                150.0,
+                1_i64,
+            ),
+            (
+                "FOOD-06",
+                "CALCIUM + VIT D3 CHEWABLE TAB",
+                15.0,
+                5.0,
+                600.0,
+                800.0,
+                0.0,
                 1_i64,
             ),
         ];
@@ -768,7 +827,7 @@ impl Database {
     }
 
     pub fn insert_crew_input(&self, input: &NewCrewInput<'_>) -> Result<CrewInput> {
-        let logged_at_utc = "2026-11-14T20:15:00Z".to_string();
+        let logged_at_utc = calc::utc_now_iso8601();
         self.conn.execute(
             "INSERT INTO crew_input_queue
              (astronaut_id, logged_at_utc, mission_day, input_type, reference_code, consumption_pct, notes, is_synced)
@@ -785,58 +844,12 @@ impl Database {
         )?;
         let input_id = self.conn.last_insert_rowid();
 
-        // Recompute daily SANS & Osteoporosis states from view totals
-        let totals = self.load_daily_nutrition(input.astronaut_id, input.mission_day)?;
-        let (sans_score, sans_risk) =
-            calc::calc_sans_risk(totals.sodium_mg_total, input.avg_co2_ppm, input.phase);
-        self.conn.execute(
-            "INSERT INTO sans_daily_state
-             (astronaut_id, mission_day, sodium_mg_total, avg_cabin_co2_ppm, max_cabin_co2_ppm, sans_score, sans_risk, computed_at_utc, is_synced)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
-             ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
-                 sodium_mg_total = excluded.sodium_mg_total,
-                 avg_cabin_co2_ppm = excluded.avg_cabin_co2_ppm,
-                 sans_score = excluded.sans_score,
-                 sans_risk = excluded.sans_risk,
-                 is_synced = 0",
-            params![
-                input.astronaut_id,
-                input.mission_day,
-                totals.sodium_mg_total,
-                input.avg_co2_ppm,
-                input.avg_co2_ppm.max(1320.0),
-                sans_score,
-                sans_risk,
-                logged_at_utc,
-            ],
-        )?;
-
-        let ex_load = self
-            .load_osteo_state(input.astronaut_id, input.mission_day)?
-            .map(|o| o.exercise_load_idx)
-            .unwrap_or(82.0);
-        let (prot_score, osteo_risk) =
-            calc::calc_osteoporosis_risk(ex_load, totals.calcium_mg_total, totals.vit_d3_iu_total);
-        self.conn.execute(
-            "INSERT INTO osteoporosis_daily_state
-             (astronaut_id, mission_day, exercise_load_idx, calcium_mg_total, vit_d3_iu_total, protection_score, osteo_risk, computed_at_utc, is_synced)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
-             ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
-                 calcium_mg_total = excluded.calcium_mg_total,
-                 vit_d3_iu_total = excluded.vit_d3_iu_total,
-                 protection_score = excluded.protection_score,
-                 osteo_risk = excluded.osteo_risk,
-                 is_synced = 0",
-            params![
-                input.astronaut_id,
-                input.mission_day,
-                ex_load,
-                totals.calcium_mg_total,
-                totals.vit_d3_iu_total,
-                prot_score,
-                osteo_risk,
-                logged_at_utc,
-            ],
+        self.recompute_daily_derived_states(
+            input.astronaut_id,
+            input.mission_day,
+            input.phase,
+            input.avg_co2_ppm,
+            &logged_at_utc,
         )?;
 
         Ok(CrewInput {
@@ -850,6 +863,504 @@ impl Database {
             notes: input.notes.map(ToString::to_string),
             is_synced: 0,
         })
+    }
+
+    pub fn recompute_daily_derived_states(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+        phase: &str,
+        fallback_co2_ppm: f64,
+        computed_at_utc: &str,
+    ) -> Result<()> {
+        let totals = self.load_daily_nutrition(astronaut_id, mission_day)?;
+        let physio = self.load_daily_physio_totals(astronaut_id, mission_day)?;
+        let avg_co2 = if physio.frame_count > 0 {
+            physio.avg_cabin_co2_ppm
+        } else {
+            fallback_co2_ppm
+        };
+        let max_co2 = if physio.frame_count > 0 {
+            physio.max_cabin_co2_ppm
+        } else {
+            fallback_co2_ppm
+        };
+
+        let (sans_score, sans_risk) = calc::calc_sans_risk(totals.sodium_mg_total, avg_co2, phase);
+        self.conn.execute(
+            "INSERT INTO sans_daily_state
+             (astronaut_id, mission_day, sodium_mg_total, avg_cabin_co2_ppm, max_cabin_co2_ppm, sans_score, sans_risk, computed_at_utc, is_synced)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
+             ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
+                 sodium_mg_total = excluded.sodium_mg_total,
+                 avg_cabin_co2_ppm = excluded.avg_cabin_co2_ppm,
+                 max_cabin_co2_ppm = MAX(sans_daily_state.max_cabin_co2_ppm, excluded.max_cabin_co2_ppm),
+                 sans_score = excluded.sans_score,
+                 sans_risk = excluded.sans_risk,
+                 computed_at_utc = excluded.computed_at_utc,
+                 is_synced = 0",
+            params![
+                astronaut_id,
+                mission_day,
+                totals.sodium_mg_total,
+                avg_co2,
+                max_co2,
+                sans_score,
+                sans_risk,
+                computed_at_utc,
+            ],
+        )?;
+
+        let ex_units: f64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(COALESCE(consumption_pct, 100) / 100.0), 0.0)
+             FROM crew_input_queue
+             WHERE astronaut_id = ?1 AND mission_day = ?2 AND input_type = 'EXERCISE'",
+            params![astronaut_id, mission_day],
+            |r| r.get(0),
+        )?;
+        let ex_load = (75.0 + ex_units * 15.0 + physio.avg_imu_activity_idx * 20.0).clamp(0.0, 120.0);
+        let (prot_score, osteo_risk) =
+            calc::calc_osteoporosis_risk(ex_load, totals.calcium_mg_total, totals.vit_d3_iu_total);
+        self.conn.execute(
+            "INSERT INTO osteoporosis_daily_state
+             (astronaut_id, mission_day, exercise_load_idx, calcium_mg_total, vit_d3_iu_total, protection_score, osteo_risk, computed_at_utc, is_synced)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
+             ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
+                 exercise_load_idx = excluded.exercise_load_idx,
+                 calcium_mg_total = excluded.calcium_mg_total,
+                 vit_d3_iu_total = excluded.vit_d3_iu_total,
+                 protection_score = excluded.protection_score,
+                 osteo_risk = excluded.osteo_risk,
+                 computed_at_utc = excluded.computed_at_utc,
+                 is_synced = 0",
+            params![
+                astronaut_id,
+                mission_day,
+                ex_load,
+                totals.calcium_mg_total,
+                totals.vit_d3_iu_total,
+                prot_score,
+                osteo_risk,
+                computed_at_utc,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_food_cache_item(&self, item: &FoodCacheItem) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO iss_food_cache
+             (food_id, item_name, kcal, sodium_mg, calcium_mg, vit_d3_iu, fluid_ml, is_low_sodium)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(food_id) DO UPDATE SET
+                 item_name = excluded.item_name,
+                 kcal = excluded.kcal,
+                 sodium_mg = excluded.sodium_mg,
+                 calcium_mg = excluded.calcium_mg,
+                 vit_d3_iu = excluded.vit_d3_iu,
+                 fluid_ml = excluded.fluid_ml,
+                 is_low_sodium = excluded.is_low_sodium",
+            params![
+                item.food_id,
+                item.item_name,
+                item.kcal,
+                item.sodium_mg,
+                item.calcium_mg,
+                item.vit_d3_iu,
+                item.fluid_ml,
+                item.is_low_sodium,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_telemetry_frame(&self, frame: &NewTelemetryFrame<'_>) -> Result<TelemetryFrame> {
+        self.conn.execute(
+            "INSERT INTO telemetry_ring_buffer (
+                astronaut_id, recorded_at_utc, mission_day, mission_phase,
+                hr_bpm, sbp_mmhg, resp_brpm, spo2_pct, tissue_o2_pct, blood_n2_idx,
+                g_load, imu_activity_idx, skin_temp_c, radiation_usv_hr,
+                cabin_co2_ppm, cabin_temp_c, cabin_humidity_pct, cabin_pressure_kpa,
+                cabin_o2_pct, cabin_motion_idx, suit_pressure_kpa, suit_humidity_pct,
+                eva_elapsed_sec, kcal_burn_delta, sweat_loss_delta_ml, is_synced
+            ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22,
+                ?23, ?24, ?25, 0
+            )",
+            params![
+                frame.astronaut_id,
+                frame.recorded_at_utc,
+                frame.mission_day,
+                frame.mission_phase,
+                frame.hr_bpm,
+                frame.sbp_mmhg,
+                frame.resp_brpm,
+                frame.spo2_pct,
+                frame.tissue_o2_pct,
+                frame.blood_n2_idx,
+                frame.g_load,
+                frame.imu_activity_idx,
+                frame.skin_temp_c,
+                frame.radiation_usv_hr,
+                frame.cabin_co2_ppm,
+                frame.cabin_temp_c,
+                frame.cabin_humidity_pct,
+                frame.cabin_pressure_kpa,
+                frame.cabin_o2_pct,
+                frame.cabin_motion_idx,
+                frame.suit_pressure_kpa,
+                frame.suit_humidity_pct,
+                frame.eva_elapsed_sec,
+                frame.kcal_burn_delta,
+                frame.sweat_loss_delta_ml,
+            ],
+        )?;
+        let seq_id = self.conn.last_insert_rowid();
+
+        // Keep up to 3600 synced ring-buffer frames; unsynced frames are never discarded
+        let _ = self.conn.execute(
+            "DELETE FROM telemetry_ring_buffer
+             WHERE is_synced = 1
+               AND seq_id NOT IN (
+                   SELECT seq_id FROM telemetry_ring_buffer ORDER BY seq_id DESC LIMIT 3600
+               )",
+            [],
+        );
+
+        Ok(TelemetryFrame {
+            seq_id,
+            astronaut_id: frame.astronaut_id.to_string(),
+            recorded_at_utc: frame.recorded_at_utc.to_string(),
+            mission_day: frame.mission_day,
+            mission_phase: frame.mission_phase.to_string(),
+            hr_bpm: frame.hr_bpm,
+            sbp_mmhg: frame.sbp_mmhg,
+            resp_brpm: frame.resp_brpm,
+            spo2_pct: frame.spo2_pct,
+            tissue_o2_pct: frame.tissue_o2_pct,
+            blood_n2_idx: frame.blood_n2_idx,
+            g_load: frame.g_load,
+            imu_activity_idx: frame.imu_activity_idx,
+            skin_temp_c: frame.skin_temp_c,
+            radiation_usv_hr: frame.radiation_usv_hr,
+            cabin_co2_ppm: frame.cabin_co2_ppm,
+            cabin_temp_c: frame.cabin_temp_c,
+            cabin_humidity_pct: frame.cabin_humidity_pct,
+            cabin_pressure_kpa: frame.cabin_pressure_kpa,
+            cabin_o2_pct: frame.cabin_o2_pct,
+            cabin_motion_idx: frame.cabin_motion_idx,
+            suit_pressure_kpa: frame.suit_pressure_kpa,
+            suit_humidity_pct: frame.suit_humidity_pct,
+            eva_elapsed_sec: frame.eva_elapsed_sec,
+            kcal_burn_delta: frame.kcal_burn_delta,
+            sweat_loss_delta_ml: frame.sweat_loss_delta_ml,
+            is_synced: 0,
+        })
+    }
+
+    pub fn load_daily_physio_totals(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+    ) -> Result<DailyPhysioTotals> {
+        let (kcal_burned_total, sweat_loss_ml_total, frame_count, avg_imu_activity_idx): (
+            f64,
+            f64,
+            i64,
+            f64,
+        ) = self.conn.query_row(
+            "SELECT
+                COALESCE(SUM(kcal_burn_delta), 0.0),
+                COALESCE(SUM(sweat_loss_delta_ml), 0.0),
+                COUNT(*),
+                COALESCE(AVG(imu_activity_idx), 0.35)
+             FROM telemetry_ring_buffer
+             WHERE astronaut_id = ?1 AND mission_day = ?2",
+            params![astronaut_id, mission_day],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+
+        let (avg_cabin_co2_ppm, max_cabin_co2_ppm): (f64, f64) = self
+            .conn
+            .query_row(
+                "SELECT avg_cabin_co2_ppm, max_cabin_co2_ppm
+                 FROM v_daily_cabin_co2
+                 WHERE astronaut_id = ?1 AND mission_day = ?2",
+                params![astronaut_id, mission_day],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((1150.0, 1150.0));
+
+        Ok(DailyPhysioTotals {
+            kcal_burned_total,
+            sweat_loss_ml_total,
+            frame_count,
+            avg_cabin_co2_ppm,
+            max_cabin_co2_ppm,
+            avg_imu_activity_idx,
+        })
+    }
+
+    pub fn insert_sleep_epoch(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+        activity_count: f64,
+        hr_bpm_avg: f64,
+        sleep_state: &str,
+    ) -> Result<SleepEpoch> {
+        let epoch_start_utc = calc::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO sleep_epochs
+             (astronaut_id, epoch_start_utc, mission_day, activity_count, hr_bpm_avg, sleep_state, is_synced)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+             ON CONFLICT(astronaut_id, epoch_start_utc) DO UPDATE SET
+                 activity_count = excluded.activity_count,
+                 hr_bpm_avg = excluded.hr_bpm_avg,
+                 sleep_state = excluded.sleep_state,
+                 is_synced = 0",
+            params![
+                astronaut_id,
+                epoch_start_utc,
+                mission_day,
+                activity_count,
+                hr_bpm_avg,
+                sleep_state,
+            ],
+        )?;
+        let epoch_id = self.conn.last_insert_rowid();
+        Ok(SleepEpoch {
+            epoch_id,
+            astronaut_id: astronaut_id.to_string(),
+            epoch_start_utc,
+            mission_day,
+            activity_count,
+            hr_bpm_avg: Some(hr_bpm_avg),
+            sleep_state: sleep_state.to_string(),
+            is_synced: 0,
+        })
+    }
+
+    pub fn trigger_local_alert_if_new(
+        &self,
+        seq_id: i64,
+        protocol_id: &str,
+        severity: &str,
+    ) -> Result<bool> {
+        let active_cnt: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM local_alerts WHERE protocol_id = ?1 AND acknowledged = 0",
+            params![protocol_id],
+            |r| r.get(0),
+        )?;
+        if active_cnt > 0 {
+            return Ok(false);
+        }
+        let ts = calc::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO local_alerts (seq_id, protocol_id, triggered_at_utc, severity, acknowledged)
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![seq_id, protocol_id, ts, severity],
+        )?;
+        Ok(true)
+    }
+
+    pub fn load_unsynced_telemetry(&self, limit: usize) -> Result<Vec<TelemetryFrame>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                seq_id, astronaut_id, recorded_at_utc, mission_day, mission_phase,
+                hr_bpm, sbp_mmhg, resp_brpm, spo2_pct, tissue_o2_pct, blood_n2_idx,
+                g_load, imu_activity_idx, skin_temp_c, radiation_usv_hr,
+                cabin_co2_ppm, cabin_temp_c, cabin_humidity_pct, cabin_pressure_kpa,
+                cabin_o2_pct, cabin_motion_idx, suit_pressure_kpa, suit_humidity_pct,
+                eva_elapsed_sec, kcal_burn_delta, sweat_loss_delta_ml, is_synced
+             FROM telemetry_ring_buffer
+             WHERE is_synced = 0
+             ORDER BY seq_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(TelemetryFrame {
+                seq_id: row.get(0)?,
+                astronaut_id: row.get(1)?,
+                recorded_at_utc: row.get(2)?,
+                mission_day: row.get(3)?,
+                mission_phase: row.get(4)?,
+                hr_bpm: row.get(5)?,
+                sbp_mmhg: row.get(6)?,
+                resp_brpm: row.get(7)?,
+                spo2_pct: row.get(8)?,
+                tissue_o2_pct: row.get(9)?,
+                blood_n2_idx: row.get(10)?,
+                g_load: row.get(11)?,
+                imu_activity_idx: row.get(12)?,
+                skin_temp_c: row.get(13)?,
+                radiation_usv_hr: row.get(14)?,
+                cabin_co2_ppm: row.get(15)?,
+                cabin_temp_c: row.get(16)?,
+                cabin_humidity_pct: row.get(17)?,
+                cabin_pressure_kpa: row.get(18)?,
+                cabin_o2_pct: row.get(19)?,
+                cabin_motion_idx: row.get(20)?,
+                suit_pressure_kpa: row.get(21)?,
+                suit_humidity_pct: row.get(22)?,
+                eva_elapsed_sec: row.get(23)?,
+                kcal_burn_delta: row.get(24)?,
+                sweat_loss_delta_ml: row.get(25)?,
+                is_synced: row.get(26)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_unsynced_crew_inputs(&self, limit: usize) -> Result<Vec<CrewInput>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT input_id, astronaut_id, logged_at_utc, mission_day, input_type,
+                    reference_code, consumption_pct, notes, is_synced
+             FROM crew_input_queue
+             WHERE is_synced = 0
+             ORDER BY input_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(CrewInput {
+                input_id: row.get(0)?,
+                astronaut_id: row.get(1)?,
+                logged_at_utc: row.get(2)?,
+                mission_day: row.get(3)?,
+                input_type: row.get(4)?,
+                reference_code: row.get(5)?,
+                consumption_pct: row.get(6)?,
+                notes: row.get(7)?,
+                is_synced: row.get(8)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_unsynced_sleep_epochs(&self, limit: usize) -> Result<Vec<SleepEpoch>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT epoch_id, astronaut_id, epoch_start_utc, mission_day, activity_count,
+                    hr_bpm_avg, sleep_state, is_synced
+             FROM sleep_epochs
+             WHERE is_synced = 0
+             ORDER BY epoch_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(SleepEpoch {
+                epoch_id: row.get(0)?,
+                astronaut_id: row.get(1)?,
+                epoch_start_utc: row.get(2)?,
+                mission_day: row.get(3)?,
+                activity_count: row.get(4)?,
+                hr_bpm_avg: row.get(5)?,
+                sleep_state: row.get(6)?,
+                is_synced: row.get(7)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_unsynced_sans_states(&self) -> Result<Vec<SansDailyState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT astronaut_id, mission_day, sodium_mg_total, avg_cabin_co2_ppm,
+                    max_cabin_co2_ppm, sans_score, sans_risk, computed_at_utc, is_synced
+             FROM sans_daily_state
+             WHERE is_synced = 0",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SansDailyState {
+                astronaut_id: row.get(0)?,
+                mission_day: row.get(1)?,
+                sodium_mg_total: row.get(2)?,
+                avg_cabin_co2_ppm: row.get(3)?,
+                max_cabin_co2_ppm: row.get(4)?,
+                sans_score: row.get(5)?,
+                sans_risk: row.get(6)?,
+                computed_at_utc: row.get(7)?,
+                is_synced: row.get(8)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn load_unsynced_osteo_states(&self) -> Result<Vec<OsteoporosisDailyState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT astronaut_id, mission_day, exercise_load_idx, calcium_mg_total,
+                    vit_d3_iu_total, protection_score, osteo_risk, computed_at_utc, is_synced
+             FROM osteoporosis_daily_state
+             WHERE is_synced = 0",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(OsteoporosisDailyState {
+                astronaut_id: row.get(0)?,
+                mission_day: row.get(1)?,
+                exercise_load_idx: row.get(2)?,
+                calcium_mg_total: row.get(3)?,
+                vit_d3_iu_total: row.get(4)?,
+                protection_score: row.get(5)?,
+                osteo_risk: row.get(6)?,
+                computed_at_utc: row.get(7)?,
+                is_synced: row.get(8)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn mark_telemetry_synced(&self, seq_ids: &[i64]) -> Result<usize> {
+        let mut updated = 0;
+        let mut stmt = self
+            .conn
+            .prepare("UPDATE telemetry_ring_buffer SET is_synced = 1 WHERE seq_id = ?1")?;
+        for id in seq_ids {
+            updated += stmt.execute(params![id])?;
+        }
+        Ok(updated)
+    }
+
+    pub fn mark_crew_inputs_synced(&self, input_ids: &[i64]) -> Result<usize> {
+        let mut updated = 0;
+        let mut stmt = self
+            .conn
+            .prepare("UPDATE crew_input_queue SET is_synced = 1 WHERE input_id = ?1")?;
+        for id in input_ids {
+            updated += stmt.execute(params![id])?;
+        }
+        Ok(updated)
+    }
+
+    pub fn mark_sleep_epochs_synced(&self, epoch_ids: &[i64]) -> Result<usize> {
+        let mut updated = 0;
+        let mut stmt = self
+            .conn
+            .prepare("UPDATE sleep_epochs SET is_synced = 1 WHERE epoch_id = ?1")?;
+        for id in epoch_ids {
+            updated += stmt.execute(params![id])?;
+        }
+        Ok(updated)
+    }
+
+    pub fn mark_daily_states_synced(&self, astronaut_id: &str, mission_day: i64) -> Result<usize> {
+        let mut total = 0;
+        total += self.conn.execute(
+            "UPDATE sans_daily_state SET is_synced = 1 WHERE astronaut_id = ?1 AND mission_day = ?2",
+            params![astronaut_id, mission_day],
+        )?;
+        total += self.conn.execute(
+            "UPDATE osteoporosis_daily_state SET is_synced = 1 WHERE astronaut_id = ?1 AND mission_day = ?2",
+            params![astronaut_id, mission_day],
+        )?;
+        Ok(total)
     }
 
     pub fn load_daily_nutrition(

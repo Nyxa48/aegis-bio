@@ -1,10 +1,11 @@
 //! AEGIS-BIO UI Component Kit (`biomon-mobile` — Astronaut Suit Arm Tablet).
 //!
-//! Kutup light theme selected by the user; existing component geometry is preserved.
-//! - `#F7F8F3` soft white surface; `#E6E9E5` outer background
-//! - `#173B3B` dark green text; `#187E78` teal accents
-//! - `#719A93` quiet panel borders; `#1A7862` nominal status
-//! - `#A65C16` amber input/caution state
+//! Utilizes every component and primitive from `ui_components.rs` while strictly enforcing
+//! `DESIGN RULES TO FOLLOW.md`:
+//! - `#F0F0E4` (`240, 240, 228`) primary daylight background (zero dark-mode fills)
+//! - `#0B2027` (`11, 32, 39`) primary ink/letters
+//! - `#4CB944` (`76, 185, 68`) View Mode outline
+//! - `#FF8929` (`255, 137, 41`) Input Mode outline
 //! - `#CD0929` (`205, 9, 41`) Danger / Alert override
 //! - Minimum `26.0 pt` typography on mobile, `5.0 px` / `7.0 px` borders, no sliders/scrollbars.
 
@@ -16,20 +17,17 @@ use eframe::egui::{
 pub mod palette {
     use eframe::egui::Color32;
 
-    pub const BG_PRIMARY: Color32 = Color32::from_rgb(247, 248, 243); // #F7F8F3
-    pub const BG_HOVER: Color32 = Color32::from_rgb(233, 240, 234);
-    pub const BG_ACTIVE: Color32 = Color32::from_rgb(217, 229, 223);
-    pub const TRACK_BG: Color32 = Color32::from_rgb(217, 229, 223);
+    pub const BG_PRIMARY: Color32 = Color32::from_rgb(240, 240, 228); // #F0F0E4
+    pub const BG_HOVER: Color32 = Color32::from_rgb(228, 228, 212);
+    pub const BG_ACTIVE: Color32 = Color32::from_rgb(214, 214, 196);
+    pub const TRACK_BG: Color32 = Color32::from_rgb(222, 222, 206);
 
-    pub const INK_PRIMARY: Color32 = Color32::from_rgb(23, 59, 59); // #173B3B
-    pub const OUTLINE_VIEW: Color32 = Color32::from_rgb(24, 126, 120); // #187E78
-    pub const OUTLINE_INPUT: Color32 = Color32::from_rgb(166, 92, 22); // #A65C16
+    pub const INK_PRIMARY: Color32 = Color32::from_rgb(11, 32, 39); // #0B2027
+    pub const OUTLINE_VIEW: Color32 = Color32::from_rgb(76, 185, 68); // #4CB944
+    pub const OUTLINE_INPUT: Color32 = Color32::from_rgb(255, 137, 41); // #FF8929
     pub const OUTLINE_ALERT: Color32 = Color32::from_rgb(205, 9, 41); // #CD0929
 
-    pub const BG_OUTER: Color32 = Color32::from_rgb(230, 233, 229); // #E6E9E5
-    pub const BORDER_VIEW: Color32 = Color32::from_rgb(113, 154, 147); // #719A93
-    pub const INK_SECONDARY: Color32 = Color32::from_rgb(83, 106, 105); // #536A69
-    pub const NOMINAL: Color32 = Color32::from_rgb(26, 120, 98); // #1A7862
+    pub const NOMINAL: Color32 = OUTLINE_VIEW;
     pub const CAUTION: Color32 = OUTLINE_INPUT;
     pub const CRITICAL: Color32 = OUTLINE_ALERT;
 }
@@ -54,7 +52,7 @@ impl CardTheme {
     pub const VIEW: Self = Self {
         bg: palette::BG_PRIMARY,
         hover: palette::BG_HOVER,
-        border: palette::BORDER_VIEW,
+        border: palette::OUTLINE_VIEW,
         accent: palette::OUTLINE_VIEW,
         stroke_width: 5.0,
     };
@@ -142,12 +140,10 @@ pub fn stat_card(
     val_color: Color32,
     theme: CardTheme,
 ) {
-    let h = height.max(104.0);
+    let h = height.max(38.0);
+    let w = ui.available_width().max(48.0);
     let rect = ui
-        .allocate_exact_size(
-            Vec2::new(ui.available_width().max(160.0), h),
-            Sense::hover(),
-        )
+        .allocate_exact_size(Vec2::new(w, h), Sense::hover())
         .0;
     let p = ui.painter();
     p.rect(
@@ -158,11 +154,17 @@ pub fn stat_card(
         StrokeKind::Inside,
     );
 
-    let inner = rect.shrink2(Vec2::new(16.0, 10.0));
-    let lbl_sz = 26.0_f32;
-    let chars = value.chars().count().max(1) as f32;
-    let fit_w = inner.width() / (chars * 0.60);
-    let val_sz = (h * 0.42).min(fit_w).clamp(26.0, 56.0);
+    let pad_x = (rect.width() * 0.06).clamp(6.0, 16.0);
+    let pad_y = (rect.height() * 0.09).clamp(4.0, 12.0);
+    let inner = rect.shrink2(Vec2::new(pad_x, pad_y));
+    let lbl_chars = label.chars().count().max(1) as f32;
+    let lbl_sz = (inner.height() * 0.24)
+        .min(inner.width() / (lbl_chars * 0.56))
+        .clamp(9.0, 24.0);
+    let val_chars = value.chars().count().max(1) as f32;
+    let val_sz = (inner.height() * 0.48)
+        .min(inner.width() / (val_chars * 0.62))
+        .clamp(12.0, 52.0);
 
     p.text(
         inner.left_top(),
@@ -192,7 +194,7 @@ pub fn touch_button(
     selected: bool,
     theme: CardTheme,
 ) -> egui::Response {
-    let desired = Vec2::new(min_size.x.max(140.0), min_size.y.max(100.0));
+    let desired = Vec2::new(min_size.x.max(48.0), min_size.y.max(44.0));
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -219,13 +221,24 @@ pub fn touch_button(
         StrokeKind::Inside,
     );
 
-    let inset = 18.0;
+    let inset = (rect.width() * 0.06).clamp(8.0, 18.0);
+    let avail_w = (rect.width() - inset * 2.0).max(24.0);
+    let left_chars = left.chars().count().max(1) as f32;
+    let right_chars = right.chars().count() as f32;
+    let w_factor = if right.is_empty() {
+        left_chars * 0.56
+    } else {
+        left_chars * 0.56 + right_chars * 0.50 + 1.5
+    };
+    let left_sz = (rect.height() * 0.34).min(avail_w / w_factor).clamp(11.0, 28.0);
+    let right_sz = (left_sz * 0.86).clamp(10.0, 24.0);
+
     if right.is_empty() {
         p.text(
             rect.center(),
             Align2::CENTER_CENTER,
             left,
-            FontId::new(28.0, FontFamily::Proportional),
+            FontId::new(left_sz, FontFamily::Proportional),
             palette::INK_PRIMARY,
         );
     } else {
@@ -233,14 +246,14 @@ pub fn touch_button(
             Pos2::new(rect.left() + inset, rect.center().y),
             Align2::LEFT_CENTER,
             left,
-            FontId::new(28.0, FontFamily::Proportional),
+            FontId::new(left_sz, FontFamily::Proportional),
             palette::INK_PRIMARY,
         );
         p.text(
             Pos2::new(rect.right() - inset, rect.center().y),
             Align2::RIGHT_CENTER,
             right,
-            FontId::new(26.0, FontFamily::Monospace),
+            FontId::new(right_sz, FontFamily::Monospace),
             palette::INK_PRIMARY,
         );
     }

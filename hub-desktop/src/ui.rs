@@ -22,10 +22,7 @@ pub fn apply_mandated_visuals(ctx: &egui::Context) {
     visuals.panel_fill = BG_PRIMARY;
     visuals.window_fill = BG_PRIMARY;
     visuals.extreme_bg_color = BG_PRIMARY;
-    visuals.faint_bg_color = palette::TRACK_BG;
-    visuals.hyperlink_color = OUTLINE_VIEW;
-    visuals.selection.bg_fill = BG_ACTIVE;
-    visuals.selection.stroke = Stroke::new(1.0, INK_PRIMARY);
+    visuals.faint_bg_color = Color32::from_rgb(232, 232, 218);
     visuals.override_text_color = Some(INK_PRIMARY);
     visuals.window_shadow = Shadow::NONE;
     visuals.popup_shadow = Shadow::NONE;
@@ -79,7 +76,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("AEGIS-BIO // GÖREV KONTROL")
+                    RichText::new("AEGIS-BIO // MISSION HUB")
                         .size(24.0)
                         .strong()
                         .color(INK_PRIMARY),
@@ -98,9 +95,9 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                     ui,
                     sys_level,
                     if sys_level == StatusLevel::Critical {
-                        "EKİP UYARISI"
+                        "CREW ALERT"
                     } else {
-                        "OLAĞAN"
+                        "NOMINAL"
                     },
                 );
 
@@ -141,7 +138,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                 let avail_w = ui.available_width();
                 let btn_w = ((avail_w - 36.0) / 5.0).clamp(140.0, 240.0);
                 let overview_active = app.screen == HubScreen::MainMenu;
-                if nav_tab_button(ui, "ANA MENÜ", overview_active, OUTLINE_VIEW, btn_w)
+                if nav_tab_button(ui, "TERMINAL MENU", overview_active, OUTLINE_VIEW, btn_w)
                     .clicked()
                 {
                     app.screen = HubScreen::MainMenu;
@@ -200,18 +197,26 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                         .color(INK_PRIMARY),
                 );
                 ui.add_space(12.0);
-                let ips_str = app.snapshot.lan_local_ips.join(",");
+                let host_ips = if app.snapshot.lan_local_ips.is_empty() {
+                    "127.0.0.1".to_string()
+                } else {
+                    app.snapshot.lan_local_ips.join(",")
+                };
                 ui.label(
                     RichText::new(format!(
-                        "HOST: {} TCP:{} UDP:{} ({}) | CLIENTS: {} | RX: {}",
-                        ips_str,
+                        "LAN IP: {} | TCP: {} | UDP: {} ({}) | CLIENTS: {} | RX: {}",
+                        host_ips,
                         app.snapshot.lan_tcp_port,
                         app.snapshot.lan_discovery_port,
-                        if app.snapshot.lan_ready { "UP" } else { "DOWN" },
+                        if app.snapshot.lan_discovery_ready {
+                            "DISC ON"
+                        } else {
+                            "DISC OFF"
+                        },
                         app.snapshot.connected_clients,
                         app.snapshot.packets_received
                     ))
-                    .size(15.0)
+                    .size(14.0)
                     .family(FontFamily::Monospace)
                     .strong()
                     .color(INK_PRIMARY),
@@ -242,8 +247,11 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                 .inner_margin(egui::Margin::symmetric(14, 12)),
         )
         .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
             ui.label(
-                RichText::new("EKİP LİSTESİ")
+                RichText::new("CREW ROSTER")
                     .size(22.0)
                     .strong()
                     .color(INK_PRIMARY),
@@ -285,20 +293,11 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                                 time_sec,
                                 true,
                             );
-                            let link_tag = if crew.member.lan_status == "ONLINE" {
-                                format!("{} ●", crew.member.astronaut_id)
-                            } else {
-                                format!("{} ○", crew.member.astronaut_id)
-                            };
                             ui.label(
-                                RichText::new(link_tag)
+                                RichText::new(&crew.member.astronaut_id)
                                     .size(16.0)
                                     .strong()
-                                    .color(if crew.member.lan_status == "ONLINE" {
-                                        INK_PRIMARY
-                                    } else {
-                                        OUTLINE_INPUT
-                                    }),
+                                    .color(INK_PRIMARY),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -328,7 +327,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
 
             ui.add_space(8.0);
             ui.label(
-                RichText::new("GÖREV FAZI")
+                RichText::new("MISSION PHASE")
                     .size(22.0)
                     .strong()
                     .color(INK_PRIMARY),
@@ -367,7 +366,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
             if let Some(next_val) = ui_components::progress_slider(
                 ui,
                 46.0,
-                "STRES DÜZEYİ",
+                "STRESS GAIN",
                 gain_u16,
                 25,
                 175,
@@ -375,11 +374,12 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
             ) {
                 app.stress_gain = next_val as f32;
             }
+            });
         });
 
     // 4. CENTRAL PANEL (egui::CentralPanel + ScrollArea::vertical)
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(palette::BG_OUTER))
+        .frame(egui::Frame::NONE.fill(BG_PRIMARY))
         .show(ui, |ui| match app.screen {
             HubScreen::MainMenu => render_main_menu(ui, app, time_sec),
             HubScreen::Module(module) => {
@@ -497,10 +497,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             let hr_val = active_crew
                 .map(|cr| format!("{:.0} BPM", cr.hr_bpm))
                 .unwrap_or_else(|| "88 BPM".to_string());
-            let active_phase = active_crew
-                .map(|cr| cr.member.active_phase_code.as_str())
-                .unwrap_or(app.mission_phase.label());
-            let (hr_lo, hr_hi) = calc::phase_hr_corridor(active_phase);
+            let (hr_lo, hr_hi) = calc::phase_hr_corridor(app.mission_phase.label());
             let hr_theme = if app.snapshot.alerts.health_danger {
                 CardTheme::ALERT
             } else {
@@ -509,7 +506,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[0],
                 kpi_height,
-                "NABIZ",
+                "HEART RATE",
                 &hr_val,
                 if app.snapshot.alerts.health_danger {
                     OUTLINE_ALERT
@@ -523,34 +520,48 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[1],
                 kpi_height,
-                "MARS UZAKLIĞI",
+                "MARS EPHEMERIS",
                 &format!("{:.2} AU", app.snapshot.distance_au),
                 INK_PRIMARY,
                 &format!("OWLT {:.2}M", app.snapshot.one_way_light_min),
                 CardTheme::HUB,
             );
 
-            let primary_ip = app
-                .snapshot
-                .lan_local_ips
-                .first()
-                .map(String::as_str)
-                .unwrap_or("127.0.0.1");
-            let lan_val = if app.snapshot.lan_ready {
-                format!("{}:{}", primary_ip, app.snapshot.lan_tcp_port)
+            let lan_sub = if app.snapshot.lan_ready {
+                let ip = app
+                    .snapshot
+                    .lan_local_ips
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("0.0.0.0");
+                format!(
+                    "{}:{} | {} CLIENTS | {} PKTS",
+                    ip,
+                    app.snapshot.lan_tcp_port,
+                    app.snapshot.connected_clients,
+                    app.snapshot.packets_received
+                )
             } else {
-                "OFFLINE".to_string()
+                app.snapshot
+                    .lan_error
+                    .clone()
+                    .unwrap_or_else(|| "BIND FAILED".to_string())
             };
             ui_components::stat_card(
                 &mut c[2],
                 kpi_height,
-                "YEREL AĞ",
-                &lan_val,
-                INK_PRIMARY,
-                &format!(
-                    "{} CLIENTS | {} PKTS",
-                    app.snapshot.connected_clients, app.snapshot.packets_received
-                ),
+                "SURFACE LAN",
+                if app.snapshot.lan_ready {
+                    "ONLINE"
+                } else {
+                    "OFFLINE"
+                },
+                if app.snapshot.lan_ready {
+                    INK_PRIMARY
+                } else {
+                    OUTLINE_ALERT
+                },
+                &lan_sub,
                 CardTheme::COMMS,
             );
 
@@ -565,7 +576,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[3],
                 kpi_height,
-                "RADYASYON",
+                "RADIATION",
                 &rad_val,
                 if app.snapshot.alerts.hazard_danger {
                     OUTLINE_ALERT
@@ -758,7 +769,7 @@ fn render_module_header_bar(ui: &mut egui::Ui, app: &mut HubApp, module: HubModu
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let back_btn = egui::Button::new(
-                    RichText::new("ANA MENÜYE DÖN")
+                    RichText::new("RETURN TO TERMINAL MENU")
                         .size(16.0)
                         .strong()
                         .color(INK_PRIMARY),
@@ -786,14 +797,14 @@ fn suit_zones_for_crew(crew: &CrewSummarySnapshot) -> [Color32; 5] {
     } else {
         OUTLINE_VIEW
     };
-    let scrubber = if crew.cabin_co2_ppm > 3000.0 || crew.cabin_o2_pct.is_some_and(|o| o < 19.5) {
+    let scrubber = if crew.cabin_co2_ppm > 3000.0 {
         OUTLINE_ALERT
     } else {
         OUTLINE_VIEW
     };
     let gloves = if crew
         .suit_pressure_kpa
-        .is_some_and(|p| p < 25.0 && crew.member.active_phase_code.eq_ignore_ascii_case("EVA"))
+        .is_some_and(|p| p < 25.0 && crew.member.active_phase_code == "EVA")
     {
         OUTLINE_ALERT
     } else {
@@ -847,11 +858,10 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!(
-                        "ROLE: {}  |  PHASE: {}  |  LAN: {} ({})  |  HB: {}",
+                        "ROLE: {}  |  PHASE: {}  |  LAN: {}  |  HEARTBEAT: {}",
                         crew.member.role,
                         crew.member.active_phase_code,
                         crew.member.lan_status,
-                        crew.peer_addr.as_deref().unwrap_or("NO PEER"),
                         crew.member.last_heartbeat_utc
                     ))
                     .size(16.0)
@@ -891,10 +901,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                         crew.hr_bpm as f32,
                         lo as f32,
                         hi as f32,
-                        if crew.hr_bpm < lo
-                            || crew.hr_bpm > hi
-                            || crew.hr_bpm >= crew.resting_hr_bpm + 50.0
-                        {
+                        if crew.hr_bpm < lo || crew.hr_bpm > hi {
                             OUTLINE_ALERT
                         } else {
                             OUTLINE_VIEW
@@ -936,9 +943,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
 
     // Row 1: Primary Cardiorespiratory & Decompression
     ui.columns(4, |c| {
-        let hr_bad = crew.hr_bpm < hr_lo
-            || crew.hr_bpm > hr_hi
-            || crew.hr_bpm >= crew.resting_hr_bpm + 50.0;
+        let hr_bad = crew.hr_bpm < hr_lo || crew.hr_bpm > hr_hi;
         ui_components::stat_card(
             &mut c[0],
             card_h,
@@ -988,14 +993,17 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
         );
 
         let n2_val = crew.blood_n2_idx.unwrap_or(1.08);
-        let n2_bad = n2_val > 1.50 || crew.sans_risk == "HIGH";
+        let n2_bad = n2_val > 1.50;
         ui_components::stat_card(
             &mut c[3],
             card_h,
             "BLOOD N2 R-VALUE & SANS",
             &format!("R={:.2} / {}", n2_val, crew.sans_risk),
             if n2_bad { OUTLINE_ALERT } else { INK_PRIMARY },
-            "HALDANE LIMIT R <= 1.50",
+            &format!(
+                "NA {:.0}MG | {:.0} KCAL",
+                crew.daily_nutrition.sodium_mg_total, crew.daily_nutrition.kcal_total
+            ),
             if n2_bad {
                 CardTheme::ALERT
             } else {
@@ -1076,7 +1084,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
     // Row 3: Suit, Kinematics & Metabolic Output
     ui.columns(4, |c| {
         let suit_p = crew.suit_pressure_kpa.unwrap_or(29.6);
-        let suit_bad = crew.member.active_phase_code.eq_ignore_ascii_case("EVA") && suit_p < 25.0;
+        let suit_bad = crew.member.active_phase_code == "EVA" && suit_p < 25.0;
         ui_components::stat_card(
             &mut c[0],
             card_h,
@@ -1145,7 +1153,6 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
     ui.add_space(14.0);
 
     // Full-Roster Side-by-Side Comparison Grid
-    let mut clicked_roster_idx: Option<usize> = None;
     section_frame(OUTLINE_VIEW).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.label(
@@ -1170,6 +1177,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                     "N2 R-VAL",
                     "SHOCK / ORTHO",
                     "SANS",
+                    "NA / KCAL",
                     "CO2 (PPM)",
                     "RAD (uSv/h)",
                     "SUIT KPA",
@@ -1210,7 +1218,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                         },
                     ));
                     if ui.add(select_btn).clicked() {
-                        clicked_roster_idx = Some(idx);
+                        app.selected_crew_idx = idx;
                     }
 
                     ui.label(
@@ -1260,16 +1268,20 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                             .family(FontFamily::Monospace)
                             .color(col),
                     );
-                    let sans_col = match cr.sans_risk.as_str() {
-                        "HIGH" => OUTLINE_ALERT,
-                        "MODERATE" => OUTLINE_INPUT,
-                        _ => INK_PRIMARY,
-                    };
                     ui.label(
                         RichText::new(&cr.sans_risk)
                             .size(15.0)
                             .family(FontFamily::Monospace)
-                            .color(sans_col),
+                            .color(INK_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "{:.0} / {:.0}",
+                            cr.daily_nutrition.sodium_mg_total, cr.daily_nutrition.kcal_total
+                        ))
+                        .size(15.0)
+                        .family(FontFamily::Monospace)
+                        .color(INK_PRIMARY),
                     );
                     ui.label(
                         RichText::new(format!("{:.0}", cr.cabin_co2_ppm))
@@ -1302,15 +1314,12 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                         } else {
                             StatusLevel::Nominal
                         },
-                        if row_alert { "ALERT" } else { "OLAĞAN" },
+                        if row_alert { "ALERT" } else { "NOMINAL" },
                     );
                     ui.end_row();
                 }
             });
     });
-    if let Some(idx) = clicked_roster_idx {
-        app.select_crew(idx);
-    }
 }
 
 // ============================================================================
@@ -1586,16 +1595,11 @@ fn render_phase_and_stress_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec:
                             .family(FontFamily::Monospace)
                             .color(text_col),
                     );
-                    let sans_col = match crew.sans_risk.as_str() {
-                        "HIGH" => OUTLINE_ALERT,
-                        "MODERATE" => OUTLINE_INPUT,
-                        _ => INK_PRIMARY,
-                    };
                     ui.label(
                         RichText::new(&crew.sans_risk)
                             .size(15.0)
                             .family(FontFamily::Monospace)
-                            .color(sans_col),
+                            .color(INK_PRIMARY),
                     );
                     ui.label(
                         RichText::new(format!("{:.2}", crew.blood_n2_idx.unwrap_or(1.08)))
@@ -1827,7 +1831,7 @@ fn render_medical_and_incident_module(ui: &mut egui::Ui, app: &mut HubApp) {
                 ui.end_row();
 
                 for rep in &app.snapshot.lab_reports {
-                    let elevated = rep.status_flag != "OLAĞAN";
+                    let elevated = rep.status_flag != "NOMINAL";
                     let col = if rep.status_flag == "CRITICAL" {
                         OUTLINE_ALERT
                     } else if elevated {
@@ -2252,6 +2256,7 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
 
     // 1. LAN Sync Telemetry & Packet Injector
     let mut sim_pkt_clicked = false;
+    let mut toggle_crew_sim_clicked = false;
     section_frame(if app.snapshot.lan_ready {
         OUTLINE_VIEW
     } else {
@@ -2281,43 +2286,88 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                         .strong()
                         .color(INK_PRIMARY),
                 )
-                .min_size(Vec2::new(280.0, 36.0))
+                .min_size(Vec2::new(260.0, 36.0))
                 .fill(BG_ACTIVE)
                 .stroke(Stroke::new(BORDER_DESKTOP, OUTLINE_INPUT));
                 if ui.add(sim_btn).clicked() {
                     sim_pkt_clicked = true;
                 }
+
+                ui.add_space(8.0);
+                let sim_toggle_btn = egui::Button::new(
+                    RichText::new(if app.crew_sim_enabled {
+                        "1HZ CREW SIM: ON"
+                    } else {
+                        "1HZ CREW SIM: PAUSED"
+                    })
+                    .size(15.0)
+                    .strong()
+                    .color(INK_PRIMARY),
+                )
+                .min_size(Vec2::new(190.0, 36.0))
+                .fill(if app.crew_sim_enabled {
+                    BG_ACTIVE
+                } else {
+                    BG_PRIMARY
+                })
+                .stroke(Stroke::new(
+                    BORDER_DESKTOP,
+                    if app.crew_sim_enabled {
+                        OUTLINE_VIEW
+                    } else {
+                        OUTLINE_INPUT
+                    },
+                ));
+                if ui.add(sim_toggle_btn).clicked() {
+                    toggle_crew_sim_clicked = true;
+                }
             });
         });
         ui.add_space(8.0);
-        let host_ips = app.snapshot.lan_local_ips.join(" | ");
         ui.columns(4, |c| {
-            ui_components::stat_card(
-                &mut c[0],
-                88.0,
-                "HOST LAN IP(S)",
-                &host_ips,
-                INK_PRIMARY,
-                &format!(
+            let ips_str = if app.snapshot.lan_local_ips.is_empty() {
+                app.lan_server.bind_addr().to_string()
+            } else {
+                app.snapshot.lan_local_ips.join(", ")
+            };
+            let bind_sub = if app.snapshot.lan_ready {
+                format!(
                     "TCP :{} | UDP DISC :{} ({})",
                     app.snapshot.lan_tcp_port,
                     app.snapshot.lan_discovery_port,
-                    if app.snapshot.lan_discovery_ready { "OK" } else { "ERR" }
-                ),
+                    if app.snapshot.lan_discovery_ready {
+                        "ACTIVE"
+                    } else {
+                        "OFFLINE"
+                    }
+                )
+            } else {
+                app.snapshot
+                    .lan_error
+                    .clone()
+                    .unwrap_or_else(|| "BIND STATUS: OFFLINE".to_string())
+            };
+            ui_components::stat_card(
+                &mut c[0],
+                84.0,
+                "HOST LAN IP(S)",
+                &ips_str,
+                INK_PRIMARY,
+                &bind_sub,
                 CardTheme::COMMS,
             );
             ui_components::stat_card(
                 &mut c[1],
-                88.0,
+                84.0,
                 "ACTIVE SUIT CLIENTS",
                 &format!("{}", app.snapshot.connected_clients),
                 INK_PRIMARY,
-                "LIVE TCP SESSIONS",
+                "TCP STREAM SESSIONS",
                 CardTheme::COMMS,
             );
             ui_components::stat_card(
                 &mut c[2],
-                88.0,
+                84.0,
                 "PACKETS RECEIVED",
                 &format!("{}", app.snapshot.packets_received),
                 INK_PRIMARY,
@@ -2326,41 +2376,42 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
             );
             ui_components::stat_card(
                 &mut c[3],
-                88.0,
+                84.0,
                 "LAST SYNC FRAME",
                 &app.snapshot.last_packet_info,
                 INK_PRIMARY,
-                app.snapshot
-                    .lan_error
-                    .as_deref()
-                    .unwrap_or("BIND 0.0.0.0 ACTIVE"),
-                if app.snapshot.lan_error.is_some() {
-                    CardTheme::ALERT
-                } else {
-                    CardTheme::COMMS
-                },
+                "REALTIME TELEMETRY QUEUE",
+                CardTheme::COMMS,
             );
-        });
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            for cr in &app.snapshot.crew_summaries {
-                let online = cr.member.lan_status == "ONLINE";
-                let badge_txt = match &cr.peer_addr {
-                    Some(addr) => format!("{}: ONLINE [{}]", cr.member.astronaut_id, addr),
-                    None => format!("{}: OFFLINE", cr.member.astronaut_id),
-                };
-                draw_lan_badge(ui, &badge_txt, online);
-            }
         });
     });
 
     if sim_pkt_clicked {
         app.simulate_inbound_biomon_packet();
     }
+    if toggle_crew_sim_clicked {
+        app.toggle_crew_sim();
+    }
 
     ui.add_space(12.0);
 
     // 2. ISS Space Food Catalog Table
+    let mut logged_food_id: Option<String> = None;
+    let selected_crew_summary = app
+        .snapshot
+        .crew_summaries
+        .get(app.selected_crew_idx)
+        .map(|c| {
+            format!(
+                "ACTIVE CREW: {} ({:.0} KCAL | {:.0}MG NA | {:.0} ML)",
+                c.member.astronaut_id,
+                c.daily_nutrition.kcal_total,
+                c.daily_nutrition.sodium_mg_total,
+                c.daily_nutrition.fluid_ml_total
+            )
+        })
+        .unwrap_or_else(|| "ACTIVE CREW: AST-01".to_string());
+
     section_frame(OUTLINE_VIEW).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -2372,6 +2423,15 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                     .strong()
                     .color(INK_PRIMARY),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(&selected_crew_summary)
+                        .size(15.0)
+                        .family(FontFamily::Monospace)
+                        .strong()
+                        .color(INK_PRIMARY),
+                );
+            });
         });
         ui.add_space(8.0);
 
@@ -2391,6 +2451,7 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                     "VIT D3 (IU)",
                     "FLUID (ML)",
                     "LOW NA",
+                    "LOG MEAL",
                 ] {
                     ui.label(RichText::new(hdr).size(15.0).strong().color(INK_PRIMARY));
                 }
@@ -2459,10 +2520,26 @@ fn render_food_and_sync_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f6
                             OUTLINE_INPUT
                         }),
                     );
+                    let log_btn = egui::Button::new(
+                        RichText::new("LOG 100%")
+                            .size(14.0)
+                            .family(FontFamily::Monospace)
+                            .strong()
+                            .color(INK_PRIMARY),
+                    )
+                    .fill(BG_ACTIVE)
+                    .stroke(Stroke::new(2.0, OUTLINE_INPUT));
+                    if ui.add(log_btn).clicked() {
+                        logged_food_id = Some(item.food_id.clone());
+                    }
                     ui.end_row();
                 }
             });
     });
+
+    if let Some(food_id) = logged_food_id {
+        app.log_quick_meal_for_selected_crew(&food_id, 100);
+    }
 
     ui.add_space(12.0);
 

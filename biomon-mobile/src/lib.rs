@@ -3,6 +3,7 @@ pub mod calc;
 pub mod db;
 pub mod icons;
 pub mod net;
+pub mod sim;
 pub mod ui;
 pub mod ui_components;
 

@@ -174,6 +174,7 @@ fn auto_discovery_handshake_sync_and_blackout_recovery() {
         crew_id: "AST-01".to_string(),
         packet_type: "TELEMETRY_BATCH_SYNC".to_string(),
         payload: json!({ "batch_id": batch_id, "hr_bpm": 84.0 }),
+        sync_batch: None,
     });
     assert!(queued);
 
@@ -217,6 +218,7 @@ fn auto_discovery_handshake_sync_and_blackout_recovery() {
         crew_id: "AST-01".to_string(),
         packet_type: "TELEMETRY_LIVE".to_string(),
         payload: json!({ "hr_bpm": 70.0 }),
+        sync_batch: None,
     }));
 
     // Wait briefly for worker loop to emit Disconnected

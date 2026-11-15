@@ -1,49 +1,44 @@
-# AEGIS-BIO — Kutup teması
+# AEGIS-BIO — NASA Space Apps 2026
 
-Rust + egui tabanlı astronot ekranı ve görev kontrol uygulaması. Seçilen açık renkli **Kutup** teması doğrudan Rust arayüz koduna uygulanmıştır.
+**Challenge:** [Create Health Monitoring Software for Astronauts on Space Missions](https://www.spaceappschallenge.org/2026/challenges/health-monitoring-software/)
 
-## Çalıştırma
+AEGIS-BIO, astronot bilek biomonitörü (`aegis_bio_demo`), görev kontrol masaüstü terminali (`hub_terminal`) ve paylaşılan UI tasarım bileşenlerinden (`examples/ui_components.rs`) oluşan Rust/`egui` tabanlı bir sağlık ve görev izleme arayüzüdür.
 
-Gereksinimler: edition 2024 destekleyen güncel Rust araç zinciri, Cargo ve Windows için Visual Studio C++ Build Tools / Windows SDK. İlk derleme bağımlılıkları internetten indirir. Komutları bu README'nin bulunduğu klasörde çalıştırın.
+## Çalıştırma Komutları
 
-Astronot ekranı:
-
-```powershell
-cargo run --locked -p biomon-mobile --bin biomon-desktop-runner
-```
-
-Görev kontrol paneli (ayrı terminalde):
+Depo kök dizinine geçin:
 
 ```powershell
-cargo run --locked -p hub-desktop --bin hub-desktop
+cd C:\Users\Emir\Documents\GitHub\aegis-bio
 ```
 
-Derleme ve mevcut testler:
-
+### 1. Biomon (Astronot Bilek / Tablet Ekranı)
 ```powershell
-cargo check --locked --workspace --all-targets
-cargo test --locked --workspace
+cargo run --bin aegis_bio_demo
+# veya varsayılan binary olduğu için:
+cargo run
 ```
 
-Release uygulamaları:
-
+### 2. Hub Desktop (Görev Kontrol Masaüstü Terminali)
 ```powershell
-cargo build --locked --release --workspace --bins
+cargo run --bin hub_terminal
 ```
 
-Üretilen dosyalar: `target/release/biomon-desktop-runner.exe` ve `target/release/hub-desktop.exe`.
+### 3. Sadece UI Bileşenleri Vitrini (Tasarım Ekibi İçin)
+Tüm UI paleti, kartlar, butonlar, slider, pusula ve giysi şematiğini bağımsız tek dosyada görmek için:
+```powershell
+cargo run --example ui_components
+```
+> Kaynak dosya: `examples/ui_components.rs`
 
-## Tema
+### 4. Test & Derleme Kontrolü
+```powershell
+cargo test
+cargo build --bins
+```
 
-- Kırık beyaz yüzey, koyu yeşil metin, petrol yeşili vurgu.
-- Astronot ana ekranındaki dört panel, merkez düğmesi, pusula ve giysi çizimi korunur.
-- Ana ekran, mod düğmeleri, temel detay etiketleri ve görev kontrol gezinmesi Türkçeleştirilmiştir. Bu sürüm tam bir yerelleştirme değildir; bazı teknik detaylar ve veri kaynaklarından gelen metinler İngilizce kalır.
-- Giriş/dikkat durumları amber, kritik uyarılar kırmızıdır.
-
-Tema kodu: `biomon-mobile/src/ui_components.rs` ve `hub-desktop/src/ui_components.rs` içindeki `palette` modülleri. Değişikliklerin kapsamı ve doğrulama sınırı için `KUTUP_TEMASI.md` dosyasına bakın.
-
-## Kaynak yapısı
-
-Etkin Cargo workspace üyeleri `biomon-mobile` ve `hub-desktop` paketleridir. ZIP'ten gelen kök `src/`, `examples/` ve Python `hub/` dosyaları korunmuştur; eski kök Rust örnekleri bu workspace'in derleme hedefleri değildir. Üstteki komutlar etkin paketleri çalıştırır.
-
-Bu paketin hazır `.exe` dosyası yoktur. Hazırlanan bilgisayarda Cargo/rustc bulunmadığından derleme, test çalıştırma ve gerçek egui ekran görüntüsü doğrulanamamıştır.
+## Ekip (4 Kişi)
+- **Ekip Lideri / Sistem Mimarı & Fizyolojik Motor:** Emir (`Nyxa48`)
+- **Veri & Simülasyon Mühendisi:** *(Eklenecek)*
+- **Görev Kontrol Frontend & Görselleştirme:** *(Eklenecek)*
+- **Astronot Beslenme UI, NASA Referansları & Medya:** *(Eklenecek)*

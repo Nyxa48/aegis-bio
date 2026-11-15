@@ -2,6 +2,7 @@ use crate::calc;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -253,6 +254,46 @@ pub struct LanCrewInputInsert<'a> {
     pub consumption_pct: Option<i64>,
     pub notes: Option<&'a str>,
     pub received_at_utc: &'a str,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HubCrewDailyNutrition {
+    pub kcal_total: f64,
+    pub sodium_mg_total: f64,
+    pub calcium_mg_total: f64,
+    pub vit_d3_iu_total: f64,
+    pub fluid_ml_total: f64,
+    pub meal_count: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InboundTelemetryFrame<'a> {
+    pub astronaut_id: &'a str,
+    pub phase_code: &'a str,
+    pub mission_day: i64,
+    pub edge_seq_id: i64,
+    pub recorded_at_utc: &'a str,
+    pub hr_bpm: f64,
+    pub sbp_mmhg: f64,
+    pub resp_brpm: f64,
+    pub spo2_pct: f64,
+    pub tissue_o2_pct: Option<f64>,
+    pub blood_n2_idx: Option<f64>,
+    pub g_load: f64,
+    pub imu_activity_idx: f64,
+    pub cabin_co2_ppm: f64,
+    pub cabin_temp_c: Option<f64>,
+    pub cabin_humidity_pct: Option<f64>,
+    pub cabin_pressure_kpa: Option<f64>,
+    pub cabin_o2_pct: Option<f64>,
+    pub cabin_motion_idx: f64,
+    pub suit_pressure_kpa: Option<f64>,
+    pub suit_humidity_pct: Option<f64>,
+    pub eva_elapsed_sec: i64,
+    pub radiation_usv_hr: f64,
+    pub shock_index: f64,
+    pub orthostatic_risk: &'a str,
+    pub sans_risk: &'a str,
 }
 
 pub struct Database {
@@ -1326,6 +1367,63 @@ impl Database {
         Ok(())
     }
 
+    pub fn has_open_incident(&self, astronaut_id: &str, hazard_type: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM surgeon_incidents
+             WHERE astronaut_id = ?1 AND hazard_type = ?2 AND surgeon_ack = 0",
+            params![astronaut_id, hazard_type],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn next_internal_edge_seq_id(&self, astronaut_id: &str) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE((SELECT MIN(edge_seq_id) FROM telemetry_history
+                                  WHERE astronaut_id = ?1 AND edge_seq_id < 0), 0) - 1",
+                params![astronaut_id],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn next_internal_edge_input_id(&self, astronaut_id: &str) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE((SELECT MIN(edge_input_id) FROM crew_input_history
+                                  WHERE astronaut_id = ?1 AND edge_input_id < 0), 0) - 1",
+                params![astronaut_id],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn update_crew_lan_heartbeat(
+        &self,
+        astronaut_id: &str,
+        phase_code: Option<&str>,
+        lan_status: &str,
+        heartbeat_utc: &str,
+    ) -> Result<()> {
+        if let Some(phase) = phase_code {
+            self.conn.execute(
+                "UPDATE crew_members
+                 SET active_phase_code = ?1, lan_status = ?2, last_heartbeat_utc = ?3
+                 WHERE astronaut_id = ?4",
+                params![phase, lan_status, heartbeat_utc, astronaut_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE crew_members
+                 SET lan_status = ?1, last_heartbeat_utc = ?2
+                 WHERE astronaut_id = ?3",
+                params![lan_status, heartbeat_utc, astronaut_id],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn upsert_crew_input_from_lan(&self, inp: &LanCrewInputInsert<'_>) -> Result<bool> {
         let changed = self.conn.execute(
             "INSERT OR IGNORE INTO crew_input_history
@@ -1431,6 +1529,458 @@ impl Database {
             |r| r.get(0),
         )?;
         Ok(rec_id)
+    }
+
+    pub fn upsert_telemetry_frame(&self, frame: &InboundTelemetryFrame<'_>) -> Result<i64> {
+        let received_at = calc::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO telemetry_history (
+                astronaut_id, phase_code, mission_day, edge_seq_id,
+                recorded_at_utc, received_at_utc,
+                hr_bpm, sbp_mmhg, resp_brpm, spo2_pct, tissue_o2_pct, blood_n2_idx,
+                g_load, imu_activity_idx, cabin_co2_ppm, cabin_temp_c,
+                cabin_humidity_pct, cabin_pressure_kpa, cabin_o2_pct, cabin_motion_idx,
+                suit_pressure_kpa, suit_humidity_pct, eva_elapsed_sec,
+                radiation_usv_hr, shock_index, orthostatic_risk, sans_risk
+            ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23,
+                ?24, ?25, ?26, ?27
+            )
+            ON CONFLICT(astronaut_id, edge_seq_id) DO NOTHING",
+            params![
+                frame.astronaut_id,
+                frame.phase_code,
+                frame.mission_day,
+                frame.edge_seq_id,
+                frame.recorded_at_utc,
+                received_at,
+                frame.hr_bpm,
+                frame.sbp_mmhg,
+                frame.resp_brpm,
+                frame.spo2_pct,
+                frame.tissue_o2_pct,
+                frame.blood_n2_idx,
+                frame.g_load,
+                frame.imu_activity_idx,
+                frame.cabin_co2_ppm,
+                frame.cabin_temp_c,
+                frame.cabin_humidity_pct,
+                frame.cabin_pressure_kpa,
+                frame.cabin_o2_pct,
+                frame.cabin_motion_idx,
+                frame.suit_pressure_kpa,
+                frame.suit_humidity_pct,
+                frame.eva_elapsed_sec,
+                frame.radiation_usv_hr,
+                frame.shock_index,
+                frame.orthostatic_risk,
+                frame.sans_risk,
+            ],
+        )?;
+        let record_id: i64 = self.conn.query_row(
+            "SELECT record_id FROM telemetry_history WHERE astronaut_id = ?1 AND edge_seq_id = ?2",
+            params![frame.astronaut_id, frame.edge_seq_id],
+            |r| r.get(0),
+        )?;
+        Ok(record_id)
+    }
+
+    pub fn load_crew_daily_nutrition(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+    ) -> Result<HubCrewDailyNutrition> {
+        self.conn
+            .query_row(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.kcal * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                    COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.sodium_mg * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                    COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.calcium_mg * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                    COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.vit_d3_iu * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                    COALESCE(SUM(
+                        CASE
+                            WHEN c.input_type = 'FLUID_LOG' AND f.food_id IS NULL THEN 250.0 * COALESCE(c.consumption_pct, 100) / 100.0
+                            WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.fluid_ml * COALESCE(c.consumption_pct, 100) / 100.0
+                            ELSE 0.0
+                        END
+                    ), 0.0),
+                    COALESCE(SUM(CASE WHEN c.input_type = 'MEAL_LOG' THEN 1 ELSE 0 END), 0)
+                 FROM crew_input_history c
+                 LEFT JOIN iss_food_catalog f ON c.reference_code = f.food_id
+                 WHERE c.astronaut_id = ?1 AND c.mission_day = ?2",
+                params![astronaut_id, mission_day],
+                |row| {
+                    Ok(HubCrewDailyNutrition {
+                        kcal_total: row.get(0)?,
+                        sodium_mg_total: row.get(1)?,
+                        calcium_mg_total: row.get(2)?,
+                        vit_d3_iu_total: row.get(3)?,
+                        fluid_ml_total: row.get(4)?,
+                        meal_count: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn load_crew_daily_sodium_map(&self, mission_day: i64) -> Result<HashMap<String, f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                c.astronaut_id,
+                COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.sodium_mg * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0)
+             FROM crew_input_history c
+             LEFT JOIN iss_food_catalog f ON c.reference_code = f.food_id
+             WHERE c.mission_day = ?1
+             GROUP BY c.astronaut_id",
+        )?;
+        let rows = stmt.query_map(params![mission_day], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })?;
+        let mut out = HashMap::new();
+        for r in rows {
+            let (id, na) = r?;
+            out.insert(id, na);
+        }
+        Ok(out)
+    }
+
+    pub fn load_all_crew_daily_nutrition(
+        &self,
+        mission_day: i64,
+    ) -> Result<HashMap<String, HubCrewDailyNutrition>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                c.astronaut_id,
+                COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.kcal * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.sodium_mg * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.calcium_mg * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                COALESCE(SUM(CASE WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.vit_d3_iu * COALESCE(c.consumption_pct, 100) / 100.0 ELSE 0.0 END), 0.0),
+                COALESCE(SUM(
+                    CASE
+                        WHEN c.input_type = 'FLUID_LOG' AND f.food_id IS NULL THEN 250.0 * COALESCE(c.consumption_pct, 100) / 100.0
+                        WHEN c.input_type IN ('MEAL_LOG', 'FLUID_LOG') AND f.food_id IS NOT NULL THEN f.fluid_ml * COALESCE(c.consumption_pct, 100) / 100.0
+                        ELSE 0.0
+                    END
+                ), 0.0),
+                COALESCE(SUM(CASE WHEN c.input_type = 'MEAL_LOG' THEN 1 ELSE 0 END), 0)
+             FROM crew_input_history c
+             LEFT JOIN iss_food_catalog f ON c.reference_code = f.food_id
+             WHERE c.mission_day = ?1
+             GROUP BY c.astronaut_id",
+        )?;
+        let rows = stmt.query_map(params![mission_day], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                HubCrewDailyNutrition {
+                    kcal_total: row.get(1)?,
+                    sodium_mg_total: row.get(2)?,
+                    calcium_mg_total: row.get(3)?,
+                    vit_d3_iu_total: row.get(4)?,
+                    fluid_ml_total: row.get(5)?,
+                    meal_count: row.get(6)?,
+                },
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for r in rows {
+            let (id, nut) = r?;
+            out.insert(id, nut);
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_sans_daily(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+        sodium_mg_total: f64,
+        avg_cabin_co2_ppm: f64,
+        max_cabin_co2_ppm: f64,
+        sans_score: f64,
+        sans_risk: &str,
+        computed_at_utc: &str,
+    ) -> Result<()> {
+        let received_at = calc::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO sans_daily_history
+             (astronaut_id, mission_day, sodium_mg_total, avg_cabin_co2_ppm, max_cabin_co2_ppm, sans_score, sans_risk, computed_at_utc, received_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
+                 sodium_mg_total = excluded.sodium_mg_total,
+                 avg_cabin_co2_ppm = excluded.avg_cabin_co2_ppm,
+                 max_cabin_co2_ppm = excluded.max_cabin_co2_ppm,
+                 sans_score = excluded.sans_score,
+                 sans_risk = excluded.sans_risk,
+                 computed_at_utc = excluded.computed_at_utc,
+                 received_at_utc = excluded.received_at_utc",
+            params![
+                astronaut_id,
+                mission_day,
+                sodium_mg_total,
+                avg_cabin_co2_ppm,
+                max_cabin_co2_ppm,
+                sans_score,
+                sans_risk,
+                computed_at_utc,
+                received_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_osteoporosis_daily(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+        exercise_load_idx: f64,
+        calcium_mg_total: f64,
+        vit_d3_iu_total: f64,
+        protection_score: f64,
+        osteo_risk: &str,
+        computed_at_utc: &str,
+    ) -> Result<()> {
+        let received_at = calc::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO osteoporosis_daily_history
+             (astronaut_id, mission_day, exercise_load_idx, calcium_mg_total, vit_d3_iu_total, protection_score, osteo_risk, computed_at_utc, received_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
+                 exercise_load_idx = excluded.exercise_load_idx,
+                 calcium_mg_total = excluded.calcium_mg_total,
+                 vit_d3_iu_total = excluded.vit_d3_iu_total,
+                 protection_score = excluded.protection_score,
+                 osteo_risk = excluded.osteo_risk,
+                 computed_at_utc = excluded.computed_at_utc,
+                 received_at_utc = excluded.received_at_utc",
+            params![
+                astronaut_id,
+                mission_day,
+                exercise_load_idx,
+                calcium_mg_total,
+                vit_d3_iu_total,
+                protection_score,
+                osteo_risk,
+                computed_at_utc,
+                received_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn recompute_crew_daily_states(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+        phase: &str,
+        fallback_co2_ppm: f64,
+    ) -> Result<()> {
+        let nut = self.load_crew_daily_nutrition(astronaut_id, mission_day)?;
+        let (avg_co2, max_co2): (f64, f64) = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(AVG(cabin_co2_ppm), ?3), COALESCE(MAX(cabin_co2_ppm), ?3)
+                 FROM telemetry_history
+                 WHERE astronaut_id = ?1 AND mission_day = ?2",
+                params![astronaut_id, mission_day, fallback_co2_ppm],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((fallback_co2_ppm, fallback_co2_ppm));
+        let now_utc = calc::utc_now_iso8601();
+        let (sans_score, sans_risk) = calc::calc_sans_risk(nut.sodium_mg_total, avg_co2, phase);
+        self.upsert_sans_daily(
+            astronaut_id,
+            mission_day,
+            nut.sodium_mg_total,
+            avg_co2,
+            max_co2,
+            sans_score,
+            sans_risk,
+            &now_utc,
+        )?;
+
+        let ex_units: f64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(COALESCE(consumption_pct, 100) / 100.0), 0.0)
+             FROM crew_input_history
+             WHERE astronaut_id = ?1 AND mission_day = ?2 AND input_type = 'EXERCISE'",
+            params![astronaut_id, mission_day],
+            |r| r.get(0),
+        )?;
+        let ex_load = (75.0 + ex_units * 15.0).clamp(0.0, 120.0);
+        let (prot_score, osteo_risk) =
+            calc::calc_osteoporosis_risk(ex_load, nut.calcium_mg_total, nut.vit_d3_iu_total);
+        self.upsert_osteoporosis_daily(
+            astronaut_id,
+            mission_day,
+            ex_load,
+            nut.calcium_mg_total,
+            nut.vit_d3_iu_total,
+            prot_score,
+            osteo_risk,
+            &now_utc,
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_crew_input(
+        &self,
+        astronaut_id: &str,
+        edge_input_id: i64,
+        logged_at_utc: &str,
+        mission_day: i64,
+        input_type: &str,
+        reference_code: Option<&str>,
+        consumption_pct: Option<i64>,
+        notes: Option<&str>,
+        current_phase: &str,
+        fallback_co2_ppm: f64,
+    ) -> Result<()> {
+        let received_at = calc::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO crew_input_history
+             (astronaut_id, edge_input_id, logged_at_utc, mission_day, input_type, reference_code, consumption_pct, notes, received_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(astronaut_id, edge_input_id) DO NOTHING",
+            params![
+                astronaut_id,
+                edge_input_id,
+                logged_at_utc,
+                mission_day,
+                input_type,
+                reference_code,
+                consumption_pct,
+                notes,
+                received_at,
+            ],
+        )?;
+        self.recompute_crew_daily_states(astronaut_id, mission_day, current_phase, fallback_co2_ppm)?;
+        Ok(())
+    }
+
+    pub fn insert_manual_meal_log(
+        &self,
+        astronaut_id: &str,
+        mission_day: i64,
+        food_id: &str,
+        consumption_pct: i64,
+        current_phase: &str,
+        fallback_co2_ppm: f64,
+    ) -> Result<()> {
+        let edge_input_id = self.next_internal_edge_input_id(astronaut_id)?;
+        let item_name: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT item_name FROM iss_food_catalog WHERE food_id = ?1",
+                params![food_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let now_utc = calc::utc_now_iso8601();
+        self.upsert_crew_input(
+            astronaut_id,
+            edge_input_id,
+            &now_utc,
+            mission_day,
+            "MEAL_LOG",
+            Some(food_id),
+            Some(consumption_pct),
+            item_name.as_deref(),
+            current_phase,
+            fallback_co2_ppm,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_sleep_epoch(
+        &self,
+        astronaut_id: &str,
+        edge_epoch_id: i64,
+        epoch_start_utc: &str,
+        mission_day: i64,
+        activity_count: f64,
+        hr_bpm_avg: Option<f64>,
+        raw_sleep_state: &str,
+    ) -> Result<()> {
+        let normalized_state = if raw_sleep_state.eq_ignore_ascii_case("WAKE") {
+            "WAKE"
+        } else {
+            "SLEEP"
+        };
+        let received_at = calc::utc_now_iso8601();
+        let inserted = self.conn.execute(
+            "INSERT INTO sleep_epoch_history
+             (astronaut_id, edge_epoch_id, epoch_start_utc, mission_day, activity_count, hr_bpm_avg, sleep_state, received_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(astronaut_id, edge_epoch_id) DO NOTHING",
+            params![
+                astronaut_id,
+                edge_epoch_id,
+                epoch_start_utc,
+                mission_day,
+                activity_count,
+                hr_bpm_avg,
+                normalized_state,
+                received_at,
+            ],
+        )?;
+        if inserted > 0 {
+            let target_min: i64 = self
+                .conn
+                .query_row(
+                    "SELECT sleep_target_min FROM crew_members WHERE astronaut_id = ?1",
+                    params![astronaut_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(480);
+            let (cur_sleep, cur_awake): (f64, i64) = self
+                .conn
+                .query_row(
+                    "SELECT total_sleep_min, COALESCE(awakenings, 0) FROM sleep_daily_summary
+                     WHERE astronaut_id = ?1 AND mission_day = ?2",
+                    params![astronaut_id, mission_day],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap_or((0.0, 0));
+            let next_sleep = if normalized_state == "SLEEP" {
+                cur_sleep + 1.0
+            } else {
+                cur_sleep
+            };
+            let next_awake = if normalized_state == "WAKE" {
+                cur_awake + 1
+            } else {
+                cur_awake
+            };
+            let eff = (next_sleep / target_min.max(1) as f64 * 100.0).clamp(0.0, 100.0);
+            let now_utc = calc::utc_now_iso8601();
+            self.conn.execute(
+                "INSERT INTO sleep_daily_summary
+                 (astronaut_id, mission_day, total_sleep_min, target_sleep_min, sleep_efficiency_pct, awakenings, computed_at_utc)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(astronaut_id, mission_day) DO UPDATE SET
+                     total_sleep_min = excluded.total_sleep_min,
+                     sleep_efficiency_pct = excluded.sleep_efficiency_pct,
+                     awakenings = excluded.awakenings,
+                     computed_at_utc = excluded.computed_at_utc",
+                params![
+                    astronaut_id,
+                    mission_day,
+                    next_sleep,
+                    target_min,
+                    eff,
+                    next_awake,
+                    now_utc,
+                ],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -1780,5 +2330,84 @@ mod tests {
         let latest = db.load_latest_telemetry("AST-01").unwrap().unwrap();
         assert_eq!(latest.edge_seq_id, 42);
         assert!((latest.hr_bpm - 112.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ingestion_dedup_nutrition_sans_and_sleep() {
+        let mut db = Database::open_in_memory_fallback();
+        db.seed_demo_data().expect("seed_demo_data");
+
+        let before_nut = db.load_crew_daily_nutrition("AST-01", 1).unwrap();
+        let na_map = db.load_crew_daily_sodium_map(1).unwrap();
+        assert!(
+            (*na_map.get("AST-01").unwrap() - before_nut.sodium_mg_total).abs() < 1e-6
+        );
+
+        // Upsert telemetry frame twice with identical edge_seq_id -> deduped cleanly
+        let frame = InboundTelemetryFrame {
+            astronaut_id: "AST-01",
+            phase_code: "EVA",
+            mission_day: 1,
+            edge_seq_id: 99,
+            recorded_at_utc: "2026-11-15T10:15:00Z",
+            hr_bpm: 126.0,
+            sbp_mmhg: 130.0,
+            resp_brpm: 22.0,
+            spo2_pct: 98.0,
+            tissue_o2_pct: Some(93.5),
+            blood_n2_idx: Some(1.06),
+            g_load: 0.01,
+            imu_activity_idx: 0.55,
+            cabin_co2_ppm: 1250.0,
+            cabin_temp_c: Some(21.5),
+            cabin_humidity_pct: Some(44.0),
+            cabin_pressure_kpa: Some(101.3),
+            cabin_o2_pct: Some(20.9),
+            cabin_motion_idx: 0.2,
+            suit_pressure_kpa: Some(29.6),
+            suit_humidity_pct: Some(39.0),
+            eva_elapsed_sec: 120,
+            radiation_usv_hr: 0.65,
+            shock_index: 0.97,
+            orthostatic_risk: "HIGH",
+            sans_risk: "LOW",
+        };
+        let rec1 = db.upsert_telemetry_frame(&frame).unwrap();
+        let rec2 = db.upsert_telemetry_frame(&frame).unwrap();
+        assert_eq!(rec1, rec2);
+
+        // Log manual meal FOOD-03 (690mg Na) + test SANS recalculation
+        db.insert_manual_meal_log("AST-01", 1, "FOOD-03", 100, "EVA", 1250.0)
+            .unwrap();
+        let after_nut = db.load_crew_daily_nutrition("AST-01", 1).unwrap();
+        assert!(after_nut.sodium_mg_total > before_nut.sodium_mg_total + 600.0);
+
+        let sans_rows = db.load_sans_history().unwrap();
+        let ast1_sans = sans_rows
+            .iter()
+            .find(|s| s.astronaut_id == "AST-01" && s.mission_day == 1)
+            .unwrap();
+        assert!((ast1_sans.sodium_mg_total - after_nut.sodium_mg_total).abs() < 1e-6);
+
+        // Sleep epoch normalization ("DEEP" -> "SLEEP") increments summary once on dedup
+        let prev_sleep = db
+            .load_sleep_summaries()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.astronaut_id == "AST-01" && s.mission_day == 1)
+            .unwrap()
+            .total_sleep_min;
+        db.upsert_sleep_epoch("AST-01", 501, "2026-11-15T10:16:00Z", 1, 2.5, Some(54.0), "DEEP")
+            .unwrap();
+        db.upsert_sleep_epoch("AST-01", 501, "2026-11-15T10:16:00Z", 1, 2.5, Some(54.0), "DEEP")
+            .unwrap();
+        let next_sleep = db
+            .load_sleep_summaries()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.astronaut_id == "AST-01" && s.mission_day == 1)
+            .unwrap()
+            .total_sleep_min;
+        assert!((next_sleep - (prev_sleep + 1.0)).abs() < 1e-6);
     }
 }

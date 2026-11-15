@@ -6,6 +6,14 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpStream, UdpSocket};
+use tokio::sync::{Notify, mpsc};
+
+pub const DEFAULT_TCP_PORT: u16 = 7878;
+pub const DEFAULT_DISCOVERY_PORT: u16 = 7879;
+pub const DISCOVERY_MAGIC_REQ: &str = "AEGIS_HUB_DISCOVER";
+pub const DISCOVERY_MAGIC_RESP: &str = "AEGIS_HUB_BEACON";
 
 static NEXT_CLIENT_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -17,14 +25,6 @@ fn next_device_id() -> String {
         .unwrap_or(0);
     format!("dev-{}-{}-{}", std::process::id(), seq, nanos)
 }
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{Notify, mpsc};
-
-pub const DEFAULT_TCP_PORT: u16 = 7878;
-pub const DEFAULT_DISCOVERY_PORT: u16 = 7879;
-pub const DISCOVERY_MAGIC_REQ: &str = "AEGIS_HUB_DISCOVER";
-pub const DISCOVERY_MAGIC_RESP: &str = "AEGIS_HUB_BEACON";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionState {
@@ -35,10 +35,26 @@ pub enum ConnectionState {
 impl ConnectionState {
     pub fn label(self) -> &'static str {
         match self {
-            ConnectionState::Online => "ÇEVRİMİÇİ",
-            ConnectionState::Offline => "ÇEVRİMDIŞI",
+            ConnectionState::Online => "ONLINE",
+            ConnectionState::Offline => "OFFLINE",
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncBatch {
+    pub telemetry_seq_ids: Vec<i64>,
+    pub crew_input_ids: Vec<i64>,
+    pub sleep_epoch_ids: Vec<i64>,
+    pub daily_state_key: Option<(String, i64)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AckEvent {
+    pub delivered: bool,
+    pub packet_type: String,
+    pub sync_batch: Option<SyncBatch>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +79,8 @@ pub struct OutboundFrame {
     pub crew_id: String,
     pub packet_type: String,
     pub payload: serde_json::Value,
+    #[serde(skip_serializing, default)]
+    pub sync_batch: Option<SyncBatch>,
 }
 
 impl OutboundFrame {
@@ -160,9 +178,7 @@ struct LocalIpv4Iface {
 
 fn is_rfc1918(ip: Ipv4Addr) -> bool {
     let o = ip.octets();
-    (o[0] == 192 && o[1] == 168)
-        || (o[0] == 172 && (16..=31).contains(&o[1]))
-        || o[0] == 10
+    (o[0] == 192 && o[1] == 168) || (o[0] == 172 && (16..=31).contains(&o[1])) || o[0] == 10
 }
 
 fn is_cgnat(ip: Ipv4Addr) -> bool {
@@ -179,7 +195,10 @@ fn push_iface(out: &mut Vec<LocalIpv4Iface>, ip: Ipv4Addr, broadcast: Option<Ipv
         Ipv4Addr::new(o[0], o[1], o[2], 255)
     });
     if !out.iter().any(|x| x.ip == ip) {
-        out.push(LocalIpv4Iface { ip, broadcast: bcast });
+        out.push(LocalIpv4Iface {
+            ip,
+            broadcast: bcast,
+        });
     }
 }
 
@@ -196,7 +215,11 @@ fn collect_unix_ifaces(out: &mut Vec<LocalIpv4Iface>) {
             let flags = ifa.ifa_flags as i32;
             let is_up = (flags & libc::IFF_UP) != 0;
             let is_loop = (flags & libc::IFF_LOOPBACK) != 0;
-            if is_up && !is_loop && !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET {
+            if is_up
+                && !is_loop
+                && !ifa.ifa_addr.is_null()
+                && (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET
+            {
                 let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
                 let ip = Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
                 let bcast = if !ifa.ifa_netmask.is_null()
@@ -262,7 +285,10 @@ fn detect_local_ipv4_ifaces() -> Vec<LocalIpv4Iface> {
 }
 
 pub fn detect_local_ipv4s() -> Vec<Ipv4Addr> {
-    detect_local_ipv4_ifaces().into_iter().map(|i| i.ip).collect()
+    detect_local_ipv4_ifaces()
+        .into_iter()
+        .map(|i| i.ip)
+        .collect()
 }
 
 fn hello_frame(identity: &ClientIdentity, device_id: &str) -> OutboundFrame {
@@ -275,6 +301,7 @@ fn hello_frame(identity: &ClientIdentity, device_id: &str) -> OutboundFrame {
             "device_id": device_id,
             "proto": 1,
         }),
+        sync_batch: None,
     }
 }
 
@@ -292,6 +319,7 @@ fn heartbeat_frame(identity: &ClientIdentity) -> OutboundFrame {
             "callsign": identity.callsign,
             "active_phase": identity.active_phase,
         }),
+        sync_batch: None,
     }
 }
 
@@ -360,7 +388,9 @@ async fn discover_via_udp(discovery_port: u16, identity: &ClientIdentity) -> Opt
     let tx0 = tx.clone();
     let bytes0 = probe_bytes.clone();
     tokio::spawn(async move {
-        if let Some(addr) = udp_probe_socket(Ipv4Addr::UNSPECIFIED, default_targets, bytes0, window).await {
+        if let Some(addr) =
+            udp_probe_socket(Ipv4Addr::UNSPECIFIED, default_targets, bytes0, window).await
+        {
             let _ = tx0.send(addr).await;
         }
     });
@@ -396,7 +426,8 @@ async fn verify_tcp_hub(
     device_id: &str,
     connect_timeout: Duration,
 ) -> HandshakeOutcome {
-    let Ok(Ok(stream)) = tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await else {
+    let Ok(Ok(stream)) = tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await
+    else {
         return HandshakeOutcome::Failed;
     };
     let _ = stream.set_nodelay(true);
@@ -496,11 +527,14 @@ pub struct BiomonLanClient {
     endpoint_label: Arc<RwLock<String>>,
     state: Arc<Mutex<ConnectionState>>,
     manual_blackout: Arc<AtomicBool>,
+    hub_reachable: Arc<AtomicBool>,
     frames_sent: Arc<AtomicUsize>,
     next_batch_id: AtomicU64,
     identity: Arc<RwLock<ClientIdentity>>,
     rescan_notify: Arc<Notify>,
     outbound_tx: mpsc::UnboundedSender<OutboundFrame>,
+    ack_tx: mpsc::UnboundedSender<AckEvent>,
+    ack_rx: Mutex<mpsc::UnboundedReceiver<AckEvent>>,
     event_rx: mpsc::UnboundedReceiver<LinkEvent>,
     _runtime: tokio::runtime::Runtime,
 }
@@ -535,6 +569,7 @@ impl BiomonLanClient {
         let endpoint_label = Arc::new(RwLock::new(initial_label));
         let state = Arc::new(Mutex::new(ConnectionState::Offline));
         let manual_blackout = Arc::new(AtomicBool::new(false));
+        let hub_reachable = Arc::new(AtomicBool::new(false));
         let frames_sent = Arc::new(AtomicUsize::new(0));
         let identity = Arc::new(RwLock::new(ClientIdentity {
             crew_id: cfg.crew_id.clone(),
@@ -544,6 +579,7 @@ impl BiomonLanClient {
         let rescan_notify = Arc::new(Notify::new());
 
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<OutboundFrame>();
+        let (ack_tx, ack_rx) = mpsc::unbounded_channel::<AckEvent>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<LinkEvent>();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -555,16 +591,18 @@ impl BiomonLanClient {
         let label_clone = Arc::clone(&endpoint_label);
         let state_clone = Arc::clone(&state);
         let blackout_clone = Arc::clone(&manual_blackout);
+        let reachable_clone = Arc::clone(&hub_reachable);
         let sent_clone = Arc::clone(&frames_sent);
         let id_clone = Arc::clone(&identity);
         let notify_clone = Arc::clone(&rescan_notify);
+        let ack_worker_tx = ack_tx.clone();
         let device_id = next_device_id();
 
         runtime.spawn(async move {
-
             loop {
                 // 1. Honor manual RF blackout simulation
                 if blackout_clone.load(Ordering::SeqCst) {
+                    reachable_clone.store(false, Ordering::SeqCst);
                     if let Ok(mut g) = state_clone.lock() {
                         *g = ConnectionState::Offline;
                     }
@@ -575,8 +613,16 @@ impl BiomonLanClient {
                     continue;
                 }
 
-                // Drain stale buffered live frames; SQLite holds durable unsynced records.
-                while outbound_rx.try_recv().is_ok() {}
+                // Drain any pending frames left over from a dropped socket and report negative ACKs
+                // so in-flight WAL flags reset cleanly without losing SQLite durability.
+                while let Ok(stale) = outbound_rx.try_recv() {
+                    let _ = ack_worker_tx.send(AckEvent {
+                        delivered: false,
+                        packet_type: stale.packet_type,
+                        sync_batch: stale.sync_batch,
+                        error: Some("HUB UNREACHABLE".to_string()),
+                    });
+                }
 
                 let cur_id = id_clone
                     .read()
@@ -644,6 +690,7 @@ impl BiomonLanClient {
                 let (hub_addr, stream, hello_ack) = match outcome {
                     DiscoveryResult::Connected(addr, stream, ack) => (addr, stream, ack),
                     DiscoveryResult::Rejected(slot_full) => {
+                        reachable_clone.store(false, Ordering::SeqCst);
                         if let Ok(mut lbl) = label_clone.write() {
                             *lbl = "ROSTER FULL (MAX 6)".to_string();
                         }
@@ -658,6 +705,7 @@ impl BiomonLanClient {
                         continue;
                     }
                     DiscoveryResult::NoneFound => {
+                        reachable_clone.store(false, Ordering::SeqCst);
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_millis(400)) => {}
                             _ = notify_clone.notified() => {}
@@ -686,6 +734,7 @@ impl BiomonLanClient {
                 }
 
                 // 3. Connected & Verified!
+                reachable_clone.store(true, Ordering::SeqCst);
                 let addr_str = hub_addr.to_string();
                 if let Ok(mut lbl) = label_clone.write() {
                     *lbl = addr_str.clone();
@@ -698,7 +747,10 @@ impl BiomonLanClient {
 
                 let (read_half, mut write_half) = tokio::io::split(stream);
                 let mut reader = BufReader::new(read_half).lines();
-                let mut heartbeat = tokio::time::interval(Duration::from_millis(2500));
+                let mut heartbeat = tokio::time::interval_at(
+                    tokio::time::Instant::now() + Duration::from_millis(2500),
+                    Duration::from_millis(2500),
+                );
                 heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
                 loop {
@@ -712,15 +764,33 @@ impl BiomonLanClient {
                                 return;
                             };
                             if blackout_clone.load(Ordering::SeqCst) {
+                                let _ = ack_worker_tx.send(AckEvent {
+                                    delivered: false,
+                                    packet_type: frame.packet_type,
+                                    sync_batch: frame.sync_batch,
+                                    error: Some("MANUAL BLACKOUT".to_string()),
+                                });
                                 break;
                             }
                             if let Ok(line) = frame.to_json_line() {
                                 if write_half.write_all(line.as_bytes()).await.is_err()
                                     || write_half.flush().await.is_err()
                                 {
+                                    let _ = ack_worker_tx.send(AckEvent {
+                                        delivered: false,
+                                        packet_type: frame.packet_type,
+                                        sync_batch: frame.sync_batch,
+                                        error: Some("TCP WRITE FAILED".to_string()),
+                                    });
                                     break;
                                 }
                                 sent_clone.fetch_add(1, Ordering::Relaxed);
+                                let _ = ack_worker_tx.send(AckEvent {
+                                    delivered: true,
+                                    packet_type: frame.packet_type,
+                                    sync_batch: frame.sync_batch,
+                                    error: None,
+                                });
                             }
                         }
                         maybe_line = reader.next_line() => {
@@ -759,6 +829,7 @@ impl BiomonLanClient {
                 }
 
                 // 4. Dropped or closed -> back to offline / discovery
+                reachable_clone.store(false, Ordering::SeqCst);
                 if let Ok(mut g) = state_clone.lock() {
                     *g = ConnectionState::Offline;
                 }
@@ -771,11 +842,14 @@ impl BiomonLanClient {
             endpoint_label,
             state,
             manual_blackout,
+            hub_reachable,
             frames_sent,
             next_batch_id: AtomicU64::new(1),
             identity,
             rescan_notify,
             outbound_tx,
+            ack_tx,
+            ack_rx: Mutex::new(ack_rx),
             event_rx,
             _runtime: runtime,
         }
@@ -802,11 +876,21 @@ impl BiomonLanClient {
         self.manual_blackout.load(Ordering::SeqCst)
     }
 
+    pub fn is_hub_reachable(&self) -> bool {
+        self.hub_reachable.load(Ordering::SeqCst)
+    }
+
     pub fn toggle_connection_state(&self) -> ConnectionState {
         let was_blackout = self.manual_blackout.fetch_xor(true, Ordering::SeqCst);
         let now_blackout = !was_blackout;
-        if now_blackout && let Ok(mut g) = self.state.lock() {
-            *g = ConnectionState::Offline;
+        if now_blackout {
+            self.hub_reachable.store(false, Ordering::SeqCst);
+            if let Ok(mut g) = self.state.lock() {
+                *g = ConnectionState::Offline;
+            }
+            if let Ok(mut lbl) = self.endpoint_label.write() {
+                *lbl = "BLACKOUT (MANUAL)".to_string();
+            }
         }
         self.rescan_notify.notify_waiters();
         self.connection_state()
@@ -815,6 +899,10 @@ impl BiomonLanClient {
     pub fn trigger_rescan(&self) {
         self.manual_blackout.store(false, Ordering::SeqCst);
         self.rescan_notify.notify_waiters();
+    }
+
+    pub fn trigger_probe(&self) {
+        self.trigger_rescan();
     }
 
     pub fn set_identity(&self, crew_id: &str, callsign: &str, active_phase: &str) {
@@ -843,12 +931,136 @@ impl BiomonLanClient {
 
     pub fn queue_frame(&self, frame: OutboundFrame) -> bool {
         if self.connection_state() != ConnectionState::Online {
+            let _ = self.ack_tx.send(AckEvent {
+                delivered: false,
+                packet_type: frame.packet_type,
+                sync_batch: frame.sync_batch,
+                error: Some(if self.is_manual_blackout() {
+                    "MANUAL BLACKOUT".to_string()
+                } else {
+                    "HUB UNREACHABLE".to_string()
+                }),
+            });
             return false;
         }
         self.outbound_tx.send(frame).is_ok()
     }
 
+    pub fn try_recv_ack(&self) -> Option<AckEvent> {
+        self.ack_rx.lock().ok()?.try_recv().ok()
+    }
+
     pub fn try_recv_event(&mut self) -> Option<LinkEvent> {
         self.event_rx.try_recv().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn test_wire_format_real_delivery_and_blackout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let (received_tx, received_rx) = std::sync::mpsc::channel::<String>();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.spawn(async move {
+            let tokio_listener = TcpListener::from_std(listener).unwrap();
+            if let Ok((sock, _)) = tokio_listener.accept().await {
+                let (r, mut w) = tokio::io::split(sock);
+                let mut lines = BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                        && v["packet_type"] == "HELLO"
+                    {
+                        let ack = HubDownlinkMessage::HelloAck {
+                            hub_id: "TEST-HUB".to_string(),
+                            mission_phase: "ORBIT".to_string(),
+                            distance_au: 1.32,
+                            one_way_light_min: 11.0,
+                            assigned_crew_id: "AST-01".to_string(),
+                            assigned_callsign: "ARES-1".to_string(),
+                        };
+                        let s = serde_json::to_string(&ack).unwrap() + "\n";
+                        let _ = w.write_all(s.as_bytes()).await;
+                        let _ = w.flush().await;
+                    } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                        && v["packet_type"] == "HEARTBEAT"
+                    {
+                        // Ignore periodic keepalive heartbeats in delivery assertion
+                    } else {
+                        let _ = received_tx.send(line);
+                    }
+                }
+            }
+        });
+
+        let client = BiomonLanClient::new(addr.to_string());
+        for _ in 0..80 {
+            if client.connection_state() == ConnectionState::Online {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(client.connection_state(), ConnectionState::Online);
+
+        assert!(client.queue_frame(OutboundFrame {
+            crew_id: "AST-01".to_string(),
+            packet_type: "TELEMETRY_SYNC".to_string(),
+            payload: serde_json::json!({ "seq_id": 42, "hr_bpm": 88.0 }),
+            sync_batch: Some(SyncBatch {
+                telemetry_seq_ids: vec![42],
+                ..Default::default()
+            }),
+        }));
+
+        let line = received_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("should receive JSONL packet over TCP");
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["crew_id"], "AST-01");
+        assert_eq!(parsed["packet_type"], "TELEMETRY_SYNC");
+        assert_eq!(parsed["payload"]["seq_id"], 42);
+        assert!(parsed.get("sync_batch").is_none());
+
+        let mut delivered_ack = None;
+        for _ in 0..40 {
+            if let Some(ack) = client.try_recv_ack() {
+                delivered_ack = Some(ack);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let ack = delivered_ack.expect("expected ACK event after TCP write");
+        assert!(ack.delivered);
+        assert_eq!(client.frames_sent(), 1);
+        assert_eq!(client.connection_state(), ConnectionState::Online);
+
+        // Toggle blackout -> goes Offline and does NOT transmit or fake-increment frames_sent
+        assert_eq!(client.toggle_connection_state(), ConnectionState::Offline);
+        assert!(!client.queue_frame(OutboundFrame {
+            crew_id: "AST-01".to_string(),
+            packet_type: "TELEMETRY_SYNC".to_string(),
+            payload: serde_json::json!({ "seq_id": 43 }),
+            sync_batch: None,
+        }));
+
+        let mut blackout_ack = None;
+        for _ in 0..40 {
+            if let Some(ack) = client.try_recv_ack() {
+                blackout_ack = Some(ack);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let ack2 = blackout_ack.expect("expected negative ACK during blackout");
+        assert!(!ack2.delivered);
+        assert_eq!(client.frames_sent(), 1);
+        assert!(received_rx.try_recv().is_err());
     }
 }

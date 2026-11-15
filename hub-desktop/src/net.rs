@@ -10,7 +10,7 @@ use std::sync::{
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 pub const DEFAULT_TCP_PORT: u16 = 7878;
 pub const DEFAULT_DISCOVERY_PORT: u16 = 7879;
@@ -141,35 +141,46 @@ struct ClientSession {
     callsign: String,
     device_id: Option<String>,
     tx: mpsc::UnboundedSender<HubDownlinkMessage>,
+    shutdown_tx: watch::Sender<bool>,
+}
+
+struct SlotClaim<'a> {
+    session_id: u64,
+    peer: SocketAddr,
+    requested_crew_id: &'a str,
+    requested_callsign: &'a str,
+    device_id: Option<String>,
+    tx: mpsc::UnboundedSender<HubDownlinkMessage>,
+    shutdown_tx: watch::Sender<bool>,
 }
 
 fn claim_open_slot(
     sessions: &Arc<Mutex<HashMap<SocketAddr, ClientSession>>>,
-    session_id: u64,
-    peer: SocketAddr,
-    requested_crew_id: &str,
-    requested_callsign: &str,
-    device_id: Option<String>,
-    tx: mpsc::UnboundedSender<HubDownlinkMessage>,
+    claim: SlotClaim<'_>,
 ) -> Option<(String, String)> {
     let mut map = sessions.lock().ok()?;
 
     // If the exact same device reconnected before the previous socket timed out,
-    // replace its stale socket entry so it can reclaim its slot cleanly.
-    if let Some(ref dev) = device_id {
+    // replace and signal its stale socket entry to close immediately so it can
+    // reclaim its slot cleanly without leaving a ghost reader running.
+    if let Some(ref dev) = claim.device_id {
         let stale_peers: Vec<SocketAddr> = map
             .iter()
-            .filter(|(_, s)| s.session_id != session_id && s.device_id.as_deref() == Some(dev.as_str()))
+            .filter(|(_, s)| {
+                s.session_id != claim.session_id && s.device_id.as_deref() == Some(dev.as_str())
+            })
             .map(|(p, _)| *p)
             .collect();
         for sp in stale_peers {
-            map.remove(&sp);
+            if let Some(old) = map.remove(&sp) {
+                let _ = old.shutdown_tx.send(true);
+            }
         }
     }
 
     let start_idx = CREW_SLOTS
         .iter()
-        .position(|(id, _)| *id == requested_crew_id)
+        .position(|(id, _)| *id == claim.requested_crew_id)
         .unwrap_or(0);
 
     for offset in 0..MAX_ASTRONAUT_SLOTS {
@@ -177,22 +188,24 @@ fn claim_open_slot(
         let (cand_id, default_callsign) = CREW_SLOTS[idx];
         let occupied = map
             .values()
-            .any(|s| s.session_id != session_id && s.crew_id == cand_id);
+            .any(|s| s.session_id != claim.session_id && s.crew_id == cand_id);
         if !occupied {
             let assigned_crew = cand_id.to_string();
-            let assigned_callsign = if cand_id == requested_crew_id && !requested_callsign.is_empty() {
-                requested_callsign.to_string()
-            } else {
-                default_callsign.to_string()
-            };
+            let assigned_callsign =
+                if cand_id == claim.requested_crew_id && !claim.requested_callsign.is_empty() {
+                    claim.requested_callsign.to_string()
+                } else {
+                    default_callsign.to_string()
+                };
             map.insert(
-                peer,
+                claim.peer,
                 ClientSession {
-                    session_id,
+                    session_id: claim.session_id,
                     crew_id: assigned_crew.clone(),
                     callsign: assigned_callsign.clone(),
-                    device_id,
-                    tx,
+                    device_id: claim.device_id,
+                    tx: claim.tx,
+                    shutdown_tx: claim.shutdown_tx,
                 },
             );
             return Some((assigned_crew, assigned_callsign));
@@ -247,8 +260,11 @@ fn collect_windows_adapter_ipv4s(out: &mut Vec<Ipv4Addr>) {
                         if !ua.Address.lpSockaddr.is_null() {
                             let sa_fam = unsafe { (*ua.Address.lpSockaddr).sa_family };
                             if sa_fam == AF_INET {
-                                let sa_in = unsafe { &*(ua.Address.lpSockaddr as *const SOCKADDR_IN) };
-                                let ip = Ipv4Addr::from(u32::from_be(unsafe { sa_in.sin_addr.S_un.S_addr }));
+                                let sa_in =
+                                    unsafe { &*(ua.Address.lpSockaddr as *const SOCKADDR_IN) };
+                                let ip = Ipv4Addr::from(u32::from_be(unsafe {
+                                    sa_in.sin_addr.S_un.S_addr
+                                }));
                                 if !ip.is_unspecified()
                                     && !ip.is_loopback()
                                     && !ip.is_multicast()
@@ -487,7 +503,7 @@ impl HubLanServer {
                     let _ = socket.set_nodelay(true);
                     clients_clone.fetch_add(1, Ordering::SeqCst);
 
-                    let client_counter = Arc::clone(&connected_clients_ref(&clients_clone));
+                    let client_counter = connected_clients_ref(&clients_clone);
                     let sessions_inner = Arc::clone(&sessions_clone);
                     let meta_inner = Arc::clone(&meta_for_tcp);
                     let event_tx_inner = tx_clone.clone();
@@ -496,6 +512,7 @@ impl HubLanServer {
                     tokio::spawn(async move {
                         let (read_half, mut write_half) = tokio::io::split(socket);
                         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<HubDownlinkMessage>();
+                        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
                         let writer_handle = tokio::spawn(async move {
                             while let Some(msg) = out_rx.recv().await {
@@ -511,12 +528,22 @@ impl HubLanServer {
                         let mut registered_crew: Option<String> = None;
                         let mut reader = BufReader::new(read_half).lines();
 
-                        loop {
-                            let next =
-                                tokio::time::timeout(Duration::from_secs(12), reader.next_line())
-                                    .await;
+                        let evicted = loop {
+                            if *shutdown_rx.borrow() {
+                                break true;
+                            }
+                            let next = tokio::select! {
+                                biased;
+                                res = shutdown_rx.changed() => {
+                                    if res.is_ok() && *shutdown_rx.borrow() {
+                                        break true;
+                                    }
+                                    continue;
+                                }
+                                res = tokio::time::timeout(Duration::from_secs(12), reader.next_line()) => res,
+                            };
                             let Ok(Ok(Some(line))) = next else {
-                                break;
+                                break false;
                             };
 
                             let trimmed = line.trim();
@@ -547,25 +574,35 @@ impl HubLanServer {
                                 if slot_changed {
                                     match claim_open_slot(
                                         &sessions_inner,
-                                        my_session_id,
-                                        peer,
-                                        &pkt.crew_id,
-                                        &req_callsign,
-                                        dev_id,
-                                        out_tx.clone(),
+                                        SlotClaim {
+                                            session_id: my_session_id,
+                                            peer,
+                                            requested_crew_id: &pkt.crew_id,
+                                            requested_callsign: &req_callsign,
+                                            device_id: dev_id,
+                                            tx: out_tx.clone(),
+                                            shutdown_tx: shutdown_tx.clone(),
+                                        },
                                     ) {
                                         Some((assigned_crew, assigned_callsign)) => {
-                                            if registered_crew.as_deref() != Some(assigned_crew.as_str()) {
+                                            if registered_crew.as_deref()
+                                                != Some(assigned_crew.as_str())
+                                            {
                                                 registered_crew = Some(assigned_crew.clone());
-                                                let _ = event_tx_inner.send(HubNetEvent::ClientConnected {
-                                                    peer,
-                                                    crew_id: assigned_crew.clone(),
-                                                    callsign: assigned_callsign.clone(),
-                                                });
+                                                let _ = event_tx_inner.send(
+                                                    HubNetEvent::ClientConnected {
+                                                        peer,
+                                                        crew_id: assigned_crew.clone(),
+                                                        callsign: assigned_callsign.clone(),
+                                                    },
+                                                );
                                             }
                                             pkt.crew_id = assigned_crew.clone();
                                             if pkt.packet_type == "HELLO" {
-                                                let m = meta_inner.read().map(|g| g.clone()).unwrap_or_default();
+                                                let m = meta_inner
+                                                    .read()
+                                                    .map(|g| g.clone())
+                                                    .unwrap_or_default();
                                                 let _ = out_tx.send(HubDownlinkMessage::HelloAck {
                                                     hub_id: m.hub_id,
                                                     mission_phase: m.mission_phase,
@@ -582,7 +619,7 @@ impl HubLanServer {
                                                 reason: "ALL 6 ASTRONAUT SLOTS OCCUPIED".to_string(),
                                             });
                                             tokio::time::sleep(Duration::from_millis(120)).await;
-                                            break;
+                                            break false;
                                         }
                                     }
                                 } else if pkt.packet_type == "HELLO"
@@ -594,7 +631,10 @@ impl HubLanServer {
                                         .and_then(|map| map.get(&peer).map(|s| s.callsign.clone()))
                                         .unwrap_or_else(|| cur_crew.clone());
                                     pkt.crew_id = cur_crew.clone();
-                                    let m = meta_inner.read().map(|g| g.clone()).unwrap_or_default();
+                                    let m = meta_inner
+                                        .read()
+                                        .map(|g| g.clone())
+                                        .unwrap_or_default();
                                     let _ = out_tx.send(HubDownlinkMessage::HelloAck {
                                         hub_id: m.hub_id,
                                         mission_phase: m.mission_phase,
@@ -610,7 +650,7 @@ impl HubLanServer {
                             }
 
                             let _ = event_tx_inner.send(HubNetEvent::Packet { peer, packet: pkt });
-                        }
+                        };
 
                         drop(out_tx);
                         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -622,7 +662,7 @@ impl HubLanServer {
                         {
                             map.remove(&peer);
                         }
-                        if let Some(crew_id) = registered_crew {
+                        if !evicted && let Some(crew_id) = registered_crew {
                             let _ = event_tx_inner
                                 .send(HubNetEvent::ClientDisconnected { peer, crew_id });
                         }

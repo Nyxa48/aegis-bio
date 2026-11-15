@@ -210,7 +210,6 @@ fn lan_server_discovery_session_sync_and_disconnect() {
     });
 }
 
-
 #[test]
 fn six_slot_auto_increment_eviction_and_seventh_client_rejection() {
     let mut server = HubLanServer::start_with_ports("127.0.0.1", 0, 0);
@@ -367,5 +366,130 @@ fn six_slot_auto_increment_eviction_and_seventh_client_rejection() {
                 ..
             } if assigned_crew_id == "AST-02"
         ));
+    });
+}
+
+#[test]
+fn same_device_reconnection_evicts_old_socket_cleanly_without_losing_slot() {
+    let mut server = HubLanServer::start_with_ports("127.0.0.1", 0, 0);
+    assert!(server.is_ready());
+    let tcp_port = server.tcp_port();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        // 1. Phone 1 connects on Socket A -> assigned AST-01
+        let s1_old = TcpStream::connect(format!("127.0.0.1:{tcp_port}"))
+            .await
+            .expect("connect s1_old");
+        let (r1a, mut w1a) = s1_old.into_split();
+        let mut l1a = BufReader::new(r1a).lines();
+        let hello1 = json!({
+            "crew_id": "AST-01",
+            "packet_type": "HELLO",
+            "payload": { "callsign": "ARES-1", "device_id": "phone-1" }
+        });
+        w1a.write_all(format!("{hello1}\n").as_bytes())
+            .await
+            .unwrap();
+        w1a.flush().await.unwrap();
+        let ack1a: HubDownlinkMessage = serde_json::from_str(
+            tokio::time::timeout(Duration::from_secs(2), l1a.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert!(matches!(
+            ack1a,
+            HubDownlinkMessage::HelloAck {
+                ref assigned_crew_id,
+                ..
+            } if assigned_crew_id == "AST-01"
+        ));
+
+        while server.try_recv_event().is_some() {}
+
+        // 2. Phone 1 reconnects on Socket B BEFORE Socket A closes
+        let s1_new = TcpStream::connect(format!("127.0.0.1:{tcp_port}"))
+            .await
+            .expect("connect s1_new");
+        let (r1b, mut w1b) = s1_new.into_split();
+        let mut l1b = BufReader::new(r1b).lines();
+        w1b.write_all(format!("{hello1}\n").as_bytes())
+            .await
+            .unwrap();
+        w1b.flush().await.unwrap();
+        let ack1b: HubDownlinkMessage = serde_json::from_str(
+            tokio::time::timeout(Duration::from_secs(2), l1b.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert!(matches!(
+            ack1b,
+            HubDownlinkMessage::HelloAck {
+                ref assigned_crew_id,
+                ..
+            } if assigned_crew_id == "AST-01"
+        ));
+
+        // Socket A must terminate immediately via watch shutdown without emitting ClientDisconnected
+        let old_eof = tokio::time::timeout(Duration::from_secs(2), l1a.next_line())
+            .await
+            .expect("old socket should close immediately upon eviction");
+        assert!(matches!(old_eof, Ok(None) | Err(_)));
+        drop(w1a);
+        drop(l1a);
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        while let Some(ev) = server.try_recv_event() {
+            assert!(
+                !matches!(ev, HubNetEvent::ClientDisconnected { .. }),
+                "evicted stale socket must not emit ClientDisconnected: {ev:?}"
+            );
+        }
+        assert!(server.crew_has_active_session("AST-01"));
+
+        // 3. Phone 2 connects requesting AST-01 -> must be bumped to AST-02
+        let s2 = TcpStream::connect(format!("127.0.0.1:{tcp_port}"))
+            .await
+            .expect("connect s2");
+        let (r2, mut w2) = s2.into_split();
+        let mut l2 = BufReader::new(r2).lines();
+        let hello2 = json!({
+            "crew_id": "AST-01",
+            "packet_type": "HELLO",
+            "payload": { "callsign": "ARES-1", "device_id": "phone-2" }
+        });
+        w2.write_all(format!("{hello2}\n").as_bytes())
+            .await
+            .unwrap();
+        w2.flush().await.unwrap();
+        let ack2: HubDownlinkMessage = serde_json::from_str(
+            tokio::time::timeout(Duration::from_secs(2), l2.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert!(matches!(
+            ack2,
+            HubDownlinkMessage::HelloAck {
+                ref assigned_crew_id,
+                ..
+            } if assigned_crew_id == "AST-02"
+        ));
+        assert_eq!(server.online_crew_peers().len(), 2);
     });
 }

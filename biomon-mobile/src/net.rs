@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Notify, mpsc};
+use tokio::task::JoinSet;
 
 pub const DEFAULT_TCP_PORT: u16 = 7878;
 pub const DEFAULT_DISCOVERY_PORT: u16 = 7879;
@@ -413,17 +414,12 @@ async fn discover_via_udp(discovery_port: u16, identity: &ClientIdentity) -> Opt
         }
     }
 
-    let (tx, mut rx) = mpsc::channel::<SocketAddr>(4);
+    let mut set: JoinSet<Option<SocketAddr>> = JoinSet::new();
 
     // 1. Default 0.0.0.0 socket probing limited + directed broadcasts + loopback
-    let tx0 = tx.clone();
     let bytes0 = probe_bytes.clone();
-    tokio::spawn(async move {
-        if let Some(addr) =
-            udp_probe_socket(Ipv4Addr::UNSPECIFIED, default_targets, bytes0, window).await
-        {
-            let _ = tx0.send(addr).await;
-        }
+    set.spawn(async move {
+        udp_probe_socket(Ipv4Addr::UNSPECIFIED, default_targets, bytes0, window).await
     });
 
     // 2. One interface-pinned socket per real NIC (forces Android/Linux Wi-Fi TX even with 5G active)
@@ -431,36 +427,46 @@ async fn discover_via_udp(discovery_port: u16, identity: &ClientIdentity) -> Opt
         if is_cgnat(iface.ip) {
             continue;
         }
-        let tx_i = tx.clone();
         let bytes_i = probe_bytes.clone();
         let targets_i = vec![
             SocketAddr::from((iface.broadcast, discovery_port)),
             SocketAddr::from(([255, 255, 255, 255], discovery_port)),
         ];
-        tokio::spawn(async move {
-            if let Some(addr) = udp_probe_socket(iface.ip, targets_i, bytes_i, window).await {
-                let _ = tx_i.send(addr).await;
-            }
-        });
+        set.spawn(async move { udp_probe_socket(iface.ip, targets_i, bytes_i, window).await });
     }
-    drop(tx);
 
-    tokio::time::timeout(window + Duration::from_millis(50), rx.recv())
-        .await
-        .ok()
-        .flatten()
+    let deadline = tokio::time::Instant::now() + window + Duration::from_millis(50);
+    while let Ok(Some(joined)) = tokio::time::timeout_at(deadline, set.join_next()).await {
+        if let Ok(Some(addr)) = joined {
+            set.abort_all();
+            return Some(addr);
+        }
+    }
+    set.abort_all();
+    None
 }
 
-async fn verify_tcp_hub(
+/// Opens a TCP connection strictly to test reachability without sending `HELLO`.
+/// Separating TCP connect probing from the single authoritative `HELLO` handshake
+/// guarantees a client never emits concurrent duplicate `HELLO` frames that could
+/// self-evict its own active slot on the Hub.
+async fn probe_tcp_open(
     addr: SocketAddr,
-    identity: &ClientIdentity,
-    device_id: &str,
     connect_timeout: Duration,
-) -> HandshakeOutcome {
+) -> Option<(SocketAddr, TcpStream)> {
     let Ok(Ok(stream)) = tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await
     else {
-        return HandshakeOutcome::Failed;
+        return None;
     };
+    let _ = stream.set_nodelay(true);
+    Some((addr, stream))
+}
+
+async fn handshake_tcp_stream(
+    stream: TcpStream,
+    identity: &ClientIdentity,
+    device_id: &str,
+) -> HandshakeOutcome {
     let _ = stream.set_nodelay(true);
     let (read_half, mut write_half) = tokio::io::split(stream);
 
@@ -491,19 +497,25 @@ async fn verify_tcp_hub(
     }
 }
 
+async fn verify_tcp_hub(
+    addr: SocketAddr,
+    identity: &ClientIdentity,
+    device_id: &str,
+    connect_timeout: Duration,
+) -> HandshakeOutcome {
+    let Some((_, stream)) = probe_tcp_open(addr, connect_timeout).await else {
+        return HandshakeOutcome::Failed;
+    };
+    handshake_tcp_stream(stream, identity, device_id).await
+}
+
 enum DiscoveryResult {
     Connected(SocketAddr, TcpStream, HubDownlinkMessage),
     Rejected(HubDownlinkMessage),
     NoneFound,
 }
 
-/// Fast-path probe directly against `.1` gateway of each local non-CGNAT RFC-1918 interface
-/// (e.g. `192.168.137.1` when connected to a Windows Laptop Hotspot), avoiding full subnet sweep.
-async fn probe_gateway_tcp(
-    tcp_port: u16,
-    identity: &ClientIdentity,
-    device_id: &str,
-) -> DiscoveryResult {
+fn collect_gateway_targets(tcp_port: u16) -> Vec<SocketAddr> {
     let ifaces = detect_local_ipv4_ifaces();
     let mut gateways = Vec::new();
     for iface in ifaces {
@@ -519,32 +531,44 @@ async fn probe_gateway_tcp(
             }
         }
     }
-    if gateways.is_empty() {
-        return DiscoveryResult::NoneFound;
+    gateways
+}
+
+/// Races UDP beacon discovery and `.1` gateway TCP connect probes in parallel, then performs
+/// `HELLO` handshake sequentially on at most one winning candidate stream at a time so losing
+/// speculative probes can NEVER transmit a duplicate `HELLO` with the same `device_id`.
+async fn discover_udp_or_gateway_targets(
+    discovery_port: u16,
+    gateways: Vec<SocketAddr>,
+    identity: &ClientIdentity,
+    device_id: &str,
+) -> DiscoveryResult {
+    let mut set: JoinSet<Option<(SocketAddr, TcpStream)>> = JoinSet::new();
+
+    let id_udp = identity.clone();
+    set.spawn(async move {
+        let hub_addr = discover_via_udp(discovery_port, &id_udp).await?;
+        probe_tcp_open(hub_addr, Duration::from_millis(1200)).await
+    });
+
+    for gw in gateways {
+        set.spawn(probe_tcp_open(gw, Duration::from_millis(350)));
     }
 
-    let mut handles = Vec::with_capacity(gateways.len());
-    for gw in gateways {
-        let id_clone = identity.clone();
-        let dev_clone = device_id.to_string();
-        handles.push(tokio::spawn(async move {
-            (
-                gw,
-                verify_tcp_hub(gw, &id_clone, &dev_clone, Duration::from_millis(350)).await,
-            )
-        }));
-    }
-    for h in handles {
-        if let Ok((addr, outcome)) = h.await {
-            match outcome {
-                HandshakeOutcome::Accepted(s, ack) => {
-                    return DiscoveryResult::Connected(addr, s, ack);
-                }
-                HandshakeOutcome::Rejected(msg) => {
-                    return DiscoveryResult::Rejected(msg);
-                }
-                HandshakeOutcome::Failed => {}
+    while let Some(joined) = set.join_next().await {
+        let Ok(Some((addr, stream))) = joined else {
+            continue;
+        };
+        match handshake_tcp_stream(stream, identity, device_id).await {
+            HandshakeOutcome::Accepted(s, ack) => {
+                set.abort_all();
+                return DiscoveryResult::Connected(addr, s, ack);
             }
+            HandshakeOutcome::Rejected(msg) => {
+                set.abort_all();
+                return DiscoveryResult::Rejected(msg);
+            }
+            HandshakeOutcome::Failed => {}
         }
     }
     DiscoveryResult::NoneFound
@@ -556,41 +580,37 @@ async fn discover_udp_or_gateway(
     identity: &ClientIdentity,
     device_id: &str,
 ) -> DiscoveryResult {
-    let id_udp = identity.clone();
-    let dev_udp = device_id.to_string();
-    let udp_task = tokio::spawn(async move {
-        if let Some(hub_addr) = discover_via_udp(discovery_port, &id_udp).await {
-            match verify_tcp_hub(hub_addr, &id_udp, &dev_udp, Duration::from_millis(1200)).await {
-                HandshakeOutcome::Accepted(s, ack) => DiscoveryResult::Connected(hub_addr, s, ack),
-                HandshakeOutcome::Rejected(msg) => DiscoveryResult::Rejected(msg),
-                HandshakeOutcome::Failed => DiscoveryResult::NoneFound,
-            }
-        } else {
-            DiscoveryResult::NoneFound
-        }
-    });
+    let gateways = collect_gateway_targets(tcp_port);
+    discover_udp_or_gateway_targets(discovery_port, gateways, identity, device_id).await
+}
 
-    let id_gw = identity.clone();
-    let dev_gw = device_id.to_string();
-    let gw_task = tokio::spawn(async move { probe_gateway_tcp(tcp_port, &id_gw, &dev_gw).await });
+async fn probe_and_handshake_chunk(
+    chunk: &[SocketAddr],
+    identity: &ClientIdentity,
+    device_id: &str,
+) -> DiscoveryResult {
+    let mut set: JoinSet<Option<(SocketAddr, TcpStream)>> = JoinSet::new();
+    for &cand in chunk {
+        set.spawn(probe_tcp_open(cand, Duration::from_millis(350)));
+    }
 
-    tokio::pin!(udp_task);
-    tokio::pin!(gw_task);
-
-    tokio::select! {
-        res = &mut udp_task => {
-            match res.unwrap_or(DiscoveryResult::NoneFound) {
-                found @ (DiscoveryResult::Connected(..) | DiscoveryResult::Rejected(..)) => found,
-                DiscoveryResult::NoneFound => gw_task.await.unwrap_or(DiscoveryResult::NoneFound),
+    while let Some(joined) = set.join_next().await {
+        let Ok(Some((cand, stream))) = joined else {
+            continue;
+        };
+        match handshake_tcp_stream(stream, identity, device_id).await {
+            HandshakeOutcome::Accepted(s, ack) => {
+                set.abort_all();
+                return DiscoveryResult::Connected(cand, s, ack);
             }
-        }
-        res = &mut gw_task => {
-            match res.unwrap_or(DiscoveryResult::NoneFound) {
-                found @ (DiscoveryResult::Connected(..) | DiscoveryResult::Rejected(..)) => found,
-                DiscoveryResult::NoneFound => udp_task.await.unwrap_or(DiscoveryResult::NoneFound),
+            HandshakeOutcome::Rejected(msg) => {
+                set.abort_all();
+                return DiscoveryResult::Rejected(msg);
             }
+            HandshakeOutcome::Failed => {}
         }
     }
+    DiscoveryResult::NoneFound
 }
 
 /// Subnet TCP sweep fallback if UDP broadcast is dropped and Hub is not at `.1`.
@@ -643,30 +663,11 @@ async fn discover_via_subnet_tcp(
             }
 
             for chunk in candidates.chunks(64) {
-                let mut handles = Vec::with_capacity(chunk.len());
-                for &cand in chunk {
-                    let id_clone = identity.clone();
-                    let dev_clone = device_id.to_string();
-                    handles.push(tokio::spawn(async move {
-                        (
-                            cand,
-                            verify_tcp_hub(cand, &id_clone, &dev_clone, Duration::from_millis(350))
-                                .await,
-                        )
-                    }));
-                }
-                for h in handles {
-                    if let Ok((cand, outcome)) = h.await {
-                        match outcome {
-                            HandshakeOutcome::Accepted(s, ack) => {
-                                return DiscoveryResult::Connected(cand, s, ack);
-                            }
-                            HandshakeOutcome::Rejected(msg) => {
-                                return DiscoveryResult::Rejected(msg);
-                            }
-                            HandshakeOutcome::Failed => {}
-                        }
+                match probe_and_handshake_chunk(chunk, identity, device_id).await {
+                    found @ (DiscoveryResult::Connected(..) | DiscoveryResult::Rejected(..)) => {
+                        return found;
                     }
+                    DiscoveryResult::NoneFound => {}
                 }
             }
         }
@@ -1148,6 +1149,7 @@ impl BiomonLanClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
@@ -1312,5 +1314,171 @@ mod tests {
 
         client.set_hub_override(None);
         assert!(client.hub_override().is_none());
+    }
+
+    #[test]
+    fn test_dual_udp_and_gateway_race_never_self_evicts_slot() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let std_udp = StdUdpSocket::bind("127.0.0.1:0").unwrap();
+        std_udp.set_nonblocking(true).unwrap();
+        let disc_port = std_udp.local_addr().unwrap().port();
+
+        let std_tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_tcp.set_nonblocking(true).unwrap();
+        let hub_addr = std_tcp.local_addr().unwrap();
+        let tcp_port = hub_addr.port();
+
+        let slots: Arc<Mutex<HashMap<SocketAddr, (String, String)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let hello_count = Arc::new(AtomicUsize::new(0));
+        let slots_srv = Arc::clone(&slots);
+        let hellos_srv = Arc::clone(&hello_count);
+
+        rt.spawn(async move {
+            let udp = UdpSocket::from_std(std_udp).unwrap();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                while let Ok((n, peer)) = udp.recv_from(&mut buf).await {
+                    if let Ok(p) = serde_json::from_slice::<DiscoveryProbe>(&buf[..n])
+                        && p.kind == DISCOVERY_MAGIC_REQ
+                    {
+                        let beacon = DiscoveryBeacon {
+                            kind: DISCOVERY_MAGIC_RESP.to_string(),
+                            proto: 1,
+                            hub_id: "HOTSPOT-HUB".to_string(),
+                            tcp_port,
+                            mission_phase: "ORBIT".to_string(),
+                        };
+                        let _ = udp
+                            .send_to(&serde_json::to_vec(&beacon).unwrap(), peer)
+                            .await;
+                    }
+                }
+            });
+
+            let tcp = TcpListener::from_std(std_tcp).unwrap();
+            while let Ok((stream, peer)) = tcp.accept().await {
+                let slots_c = Arc::clone(&slots_srv);
+                let hellos_c = Arc::clone(&hellos_srv);
+                tokio::spawn(async move {
+                    let (r, mut w) = tokio::io::split(stream);
+                    let mut lines = BufReader::new(r).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let Ok(val) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                            continue;
+                        };
+                        if val["packet_type"] == "HELLO" {
+                            hellos_c.fetch_add(1, Ordering::SeqCst);
+                            let dev_id = val["payload"]["device_id"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string();
+                            let assigned = {
+                                let mut g = slots_c.lock().unwrap();
+                                // Mimic HubLanServer same-device eviction behavior
+                                let stale: Vec<SocketAddr> = g
+                                    .iter()
+                                    .filter(|(p, (_, d))| **p != peer && d == &dev_id)
+                                    .map(|(p, _)| *p)
+                                    .collect();
+                                for sp in stale {
+                                    g.remove(&sp);
+                                }
+                                let cand =
+                                    ["AST-01", "AST-02", "AST-03", "AST-04", "AST-05", "AST-06"]
+                                        .into_iter()
+                                        .find(|c| !g.values().any(|(slot, _)| slot == c))
+                                        .unwrap()
+                                        .to_string();
+                                g.insert(peer, (cand.clone(), dev_id));
+                                cand
+                            };
+                            let ack = HubDownlinkMessage::HelloAck {
+                                hub_id: "HOTSPOT-HUB".to_string(),
+                                mission_phase: "ORBIT".to_string(),
+                                distance_au: 1.32,
+                                one_way_light_min: 11.0,
+                                assigned_crew_id: assigned.clone(),
+                                assigned_callsign: format!("ARES-{}", &assigned[5..]),
+                            };
+                            let s = serde_json::to_string(&ack).unwrap() + "\n";
+                            let _ = w.write_all(s.as_bytes()).await;
+                            let _ = w.flush().await;
+                        }
+                    }
+                    slots_c.lock().unwrap().remove(&peer);
+                });
+            }
+        });
+
+        rt.block_on(async move {
+            let base_id = ClientIdentity {
+                crew_id: "AST-01".to_string(),
+                callsign: "ARES-1".to_string(),
+                active_phase: "ORBIT".to_string(),
+            };
+
+            // Both clients race UDP discovery AND direct gateway TCP against the SAME hub_addr
+            let (_s1, slot1) = match discover_udp_or_gateway_targets(
+                disc_port,
+                vec![hub_addr, hub_addr],
+                &base_id,
+                "dev-phone-1",
+            )
+            .await
+            {
+                DiscoveryResult::Connected(
+                    _,
+                    stream,
+                    HubDownlinkMessage::HelloAck {
+                        assigned_crew_id, ..
+                    },
+                ) => (stream, assigned_crew_id),
+                _ => panic!("device 1 failed to connect"),
+            };
+            assert_eq!(slot1, "AST-01");
+
+            // Give any stray background tasks time to settle if a race still existed
+            tokio::time::sleep(Duration::from_millis(80)).await;
+
+            let (_s2, slot2) = match discover_udp_or_gateway_targets(
+                disc_port,
+                vec![hub_addr, hub_addr],
+                &base_id,
+                "dev-phone-2",
+            )
+            .await
+            {
+                DiscoveryResult::Connected(
+                    _,
+                    stream,
+                    HubDownlinkMessage::HelloAck {
+                        assigned_crew_id, ..
+                    },
+                ) => (stream, assigned_crew_id),
+                _ => panic!("device 2 failed to connect"),
+            };
+            assert_eq!(slot2, "AST-02");
+
+            tokio::time::sleep(Duration::from_millis(80)).await;
+
+            let active_slots: Vec<String> = {
+                let mut v: Vec<String> = slots
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(|(s, _)| s.clone())
+                    .collect();
+                v.sort();
+                v
+            };
+            assert_eq!(active_slots, vec!["AST-01", "AST-02"]);
+            assert_eq!(hello_count.load(Ordering::SeqCst), 2);
+        });
     }
 }

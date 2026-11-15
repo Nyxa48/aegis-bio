@@ -93,9 +93,9 @@ aegis-bio/
 
 - **Emir Samed Y.** — [@Nyxa48](https://github.com/Nyxa48) · *Project Lead, Systems Architecture, Physiological Engine, Database & LAN Sync*
 - **Ege Canbaz** — [@Glarman](https://github.com/Glarman) · *UI Architecture & Extended Interface Engineering*
-- **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · *Team Member & Repository Collaborator*
-- **[@Lykablyat](https://github.com/Lykablyat)** · *Workspace Modularization & Cross-Platform Application Scaffold*
-- **[@harunkarakoyuns](https://github.com/harunkarakoyuns)** · *Team Member & Repository Collaborator*
+- **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · *Dataset Research & Data Integration Analysis*
+- **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Workspace Modularization & Cross-Platform Application Scaffold*
+- **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · *Research & General Project Support*
 
 ---
 
@@ -156,8 +156,8 @@ AEGIS-BIO, **WAL** (Write-Ahead Logging) modunda çalışan gömülü SQLite ver
 
 ### Ekip (5 Kişi)
 
-- **Emir Samed Y.** — [@Nyxa48](https://github.com/Nyxa48) · *Proje Lideri, Sistem Mimarı, Fizyolojik Motor, Veritabanı & LAN Senkronizasyonu*
+- **Emir Samed Y.** — [@Nyxa48](https://github.com/Nyxa48) · *Proje Lideri, Fizyolojik Motor, Veritabanı & LAN Senkronizasyonu*
 - **Ege Canbaz** — [@Glarman](https://github.com/Glarman) · *Arayüz Mimarisi & Genişletilmiş Arayüz Geliştirme*
-- **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · *Ekip Üyesi & Proje Katkıcısı*
-- **[@Lykablyat](https://github.com/Lykablyat)** · *Workspace Modülerizasyonu & Çapraz Platform Uygulama İskeleti*
-- **[@harunkarakoyuns](https://github.com/harunkarakoyuns)** · *Ekip Üyesi & Proje Katkıcısı*
+- **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · Veri Seti Araştırması & Veri Kullanım Analizi*
+- **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Sistem Mimarisi, Workspace Modülerizasyonu & Çapraz Platform Uygulama İskeleti*
+- **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · **Araştırma & Genel Proje Desteği*

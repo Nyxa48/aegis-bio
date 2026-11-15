@@ -21,10 +21,10 @@ pub enum HubModule {
 impl HubModule {
     pub fn title(self) -> &'static str {
         match self {
-            HubModule::CrewVitalsMonitor => "CREW VITALS MONITOR",
-            HubModule::PhaseAndStressControl => "PHASE & STRESS CONTROL",
-            HubModule::MedicalAndIncidentLog => "MEDICAL & INCIDENT LOG",
-            HubModule::FoodCatalogAndSync => "FOOD CATALOG & SYNC",
+            HubModule::CrewVitalsMonitor => "EKİP BİYOMETRİSİ",
+            HubModule::PhaseAndStressControl => "FAZ VE STRES",
+            HubModule::MedicalAndIncidentLog => "SAĞLIK KAYITLARI",
+            HubModule::FoodCatalogAndSync => "BESLENME VE EŞİTLEME",
         }
     }
 

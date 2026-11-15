@@ -35,8 +35,8 @@ pub enum ConnectionState {
 impl ConnectionState {
     pub fn label(self) -> &'static str {
         match self {
-            ConnectionState::Online => "ONLINE",
-            ConnectionState::Offline => "OFFLINE",
+            ConnectionState::Online => "ÇEVRİMİÇİ",
+            ConnectionState::Offline => "ÇEVRİMDIŞI",
         }
     }
 }

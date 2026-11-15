@@ -22,7 +22,10 @@ pub fn apply_mandated_visuals(ctx: &egui::Context) {
     visuals.panel_fill = BG_PRIMARY;
     visuals.window_fill = BG_PRIMARY;
     visuals.extreme_bg_color = BG_PRIMARY;
-    visuals.faint_bg_color = Color32::from_rgb(232, 232, 218);
+    visuals.faint_bg_color = palette::TRACK_BG;
+    visuals.hyperlink_color = OUTLINE_VIEW;
+    visuals.selection.bg_fill = BG_ACTIVE;
+    visuals.selection.stroke = Stroke::new(1.0, INK_PRIMARY);
     visuals.override_text_color = Some(INK_PRIMARY);
     visuals.window_shadow = Shadow::NONE;
     visuals.popup_shadow = Shadow::NONE;
@@ -76,7 +79,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("AEGIS-BIO // MISSION HUB")
+                    RichText::new("AEGIS-BIO // GÖREV KONTROL")
                         .size(24.0)
                         .strong()
                         .color(INK_PRIMARY),
@@ -95,9 +98,9 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                     ui,
                     sys_level,
                     if sys_level == StatusLevel::Critical {
-                        "CREW ALERT"
+                        "EKİP UYARISI"
                     } else {
-                        "NOMINAL"
+                        "OLAĞAN"
                     },
                 );
 
@@ -138,7 +141,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
                 let avail_w = ui.available_width();
                 let btn_w = ((avail_w - 36.0) / 5.0).clamp(140.0, 240.0);
                 let overview_active = app.screen == HubScreen::MainMenu;
-                if nav_tab_button(ui, "TERMINAL MENU", overview_active, OUTLINE_VIEW, btn_w)
+                if nav_tab_button(ui, "ANA MENÜ", overview_active, OUTLINE_VIEW, btn_w)
                     .clicked()
                 {
                     app.screen = HubScreen::MainMenu;
@@ -240,7 +243,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
         )
         .show(ui, |ui| {
             ui.label(
-                RichText::new("CREW ROSTER")
+                RichText::new("EKİP LİSTESİ")
                     .size(22.0)
                     .strong()
                     .color(INK_PRIMARY),
@@ -325,7 +328,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
 
             ui.add_space(8.0);
             ui.label(
-                RichText::new("MISSION PHASE")
+                RichText::new("GÖREV FAZI")
                     .size(22.0)
                     .strong()
                     .color(INK_PRIMARY),
@@ -364,7 +367,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
             if let Some(next_val) = ui_components::progress_slider(
                 ui,
                 46.0,
-                "STRESS GAIN",
+                "STRES DÜZEYİ",
                 gain_u16,
                 25,
                 175,
@@ -376,7 +379,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut HubApp) {
 
     // 4. CENTRAL PANEL (egui::CentralPanel + ScrollArea::vertical)
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(BG_PRIMARY))
+        .frame(egui::Frame::NONE.fill(palette::BG_OUTER))
         .show(ui, |ui| match app.screen {
             HubScreen::MainMenu => render_main_menu(ui, app, time_sec),
             HubScreen::Module(module) => {
@@ -506,7 +509,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[0],
                 kpi_height,
-                "HEART RATE",
+                "NABIZ",
                 &hr_val,
                 if app.snapshot.alerts.health_danger {
                     OUTLINE_ALERT
@@ -520,7 +523,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[1],
                 kpi_height,
-                "MARS EPHEMERIS",
+                "MARS UZAKLIĞI",
                 &format!("{:.2} AU", app.snapshot.distance_au),
                 INK_PRIMARY,
                 &format!("OWLT {:.2}M", app.snapshot.one_way_light_min),
@@ -541,7 +544,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[2],
                 kpi_height,
-                "SURFACE LAN",
+                "YEREL AĞ",
                 &lan_val,
                 INK_PRIMARY,
                 &format!(
@@ -562,7 +565,7 @@ fn render_main_menu(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64) {
             ui_components::stat_card(
                 &mut c[3],
                 kpi_height,
-                "RADIATION",
+                "RADYASYON",
                 &rad_val,
                 if app.snapshot.alerts.hazard_danger {
                     OUTLINE_ALERT
@@ -755,7 +758,7 @@ fn render_module_header_bar(ui: &mut egui::Ui, app: &mut HubApp, module: HubModu
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let back_btn = egui::Button::new(
-                    RichText::new("RETURN TO TERMINAL MENU")
+                    RichText::new("ANA MENÜYE DÖN")
                         .size(16.0)
                         .strong()
                         .color(INK_PRIMARY),
@@ -1299,7 +1302,7 @@ fn render_crew_vitals_module(ui: &mut egui::Ui, app: &mut HubApp, time_sec: f64)
                         } else {
                             StatusLevel::Nominal
                         },
-                        if row_alert { "ALERT" } else { "NOMINAL" },
+                        if row_alert { "ALERT" } else { "OLAĞAN" },
                     );
                     ui.end_row();
                 }
@@ -1824,7 +1827,7 @@ fn render_medical_and_incident_module(ui: &mut egui::Ui, app: &mut HubApp) {
                 ui.end_row();
 
                 for rep in &app.snapshot.lab_reports {
-                    let elevated = rep.status_flag != "NOMINAL";
+                    let elevated = rep.status_flag != "OLAĞAN";
                     let col = if rep.status_flag == "CRITICAL" {
                         OUTLINE_ALERT
                     } else if elevated {

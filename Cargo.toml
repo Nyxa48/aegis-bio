@@ -4,3 +4,14 @@ members = [
     "biomon-mobile",
     "hub-desktop",
 ]
+
+# Keep dev/test PDB & build cache compact across machines (~10x smaller than full debug=2)
+# while preserving file/line backtraces on workspace crates.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.release]
+strip = "debuginfo"

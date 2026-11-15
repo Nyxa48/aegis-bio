@@ -2,7 +2,7 @@ use crate::app::{AppMode, BiomonApp, QuadrantId, Screen};
 use crate::calc;
 use crate::icons;
 use crate::net::ConnectionState;
-use crate::ui_components::{self, CardTheme, StatusLevel, palette};
+use crate::ui_components::{self, CardTheme, palette};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
     Vec2, epaint::Shadow,
@@ -87,12 +87,12 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
 
     painter.rect_filled(screen_rect, CornerRadius::ZERO, BG_PRIMARY);
 
+    let min_dim = screen_rect.width().min(screen_rect.height());
     let center = screen_rect.center();
-    let circle_radius = (screen_rect.height().min(screen_rect.width()) * 0.19).clamp(95.0, 145.0);
+    let circle_radius = (min_dim * 0.165).clamp(38.0, 140.0);
 
-    // DESIGN RULES: Outer window margin 6.0 px, gap between quadrants 8.0 px
-    let outer_pad = 6.0;
-    let gap = 8.0;
+    let outer_pad = (min_dim * 0.01).clamp(3.0, 8.0);
+    let gap = (min_dim * 0.012).clamp(4.0, 10.0);
     let inner_rect = screen_rect.shrink(outer_pad);
     let mid_x = inner_rect.center().x;
     let mid_y = inner_rect.center().y;
@@ -137,10 +137,14 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     }
 
     let snap = &app.snapshot;
-    let pad_x = 22.0;
-    let pad_y = 16.0;
     let q_h = tl_rect.height();
     let q_w = tl_rect.width();
+    let pad_x = (q_w * 0.048).clamp(8.0, 24.0);
+    let pad_y = (q_h * 0.055).clamp(6.0, 18.0);
+    let title_sz = (q_h * 0.11).min(q_w * 0.082).clamp(11.0, 32.0);
+    let hero_sz = (q_h * 0.21).min(q_w * 0.145).clamp(15.0, 56.0);
+    let sub_sz = (q_h * 0.088).min(q_w * 0.058).clamp(9.0, 26.0);
+    let icon_r = (title_sz * 0.56).clamp(7.0, 20.0);
 
     // -------------------------------------------------------------------------
     // 1. TOP-LEFT: HEALTH & SUIT
@@ -161,66 +165,69 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(tl_rect.min.x + pad_x, tl_rect.min.y + pad_y),
         Align2::LEFT_TOP,
         "HEALTH & SUIT",
-        FontId::new(32.0, FontFamily::Proportional),
+        FontId::new(title_sz, FontFamily::Proportional),
         INK_PRIMARY,
     );
 
-    let heart_y = tl_rect.min.y + pad_y + (q_h * 0.24).clamp(64.0, 86.0);
-    let heart_center = Pos2::new(tl_rect.min.x + pad_x + 24.0, heart_y);
+    let heart_y = tl_rect.min.y + pad_y + title_sz + (q_h * 0.13).clamp(12.0, 48.0);
+    let heart_r = (hero_sz * 0.36).clamp(7.0, 22.0);
+    let heart_center = Pos2::new(tl_rect.min.x + pad_x + heart_r, heart_y);
     let bpm_u16 = snap.hr_bpm.round().clamp(30.0, 240.0) as u16;
     icons::draw_heart_icon(
         &painter,
         heart_center,
-        22.0,
+        heart_r,
         health_ink,
         bpm_u16,
         time_sec,
         true,
     );
     painter.text(
-        Pos2::new(heart_center.x + 38.0, heart_center.y),
+        Pos2::new(heart_center.x + heart_r * 1.65, heart_center.y),
         Align2::LEFT_CENTER,
         format!("{:.0} BPM", snap.hr_bpm),
-        FontId::new(56.0, FontFamily::Monospace),
+        FontId::new(hero_sz, FontFamily::Monospace),
         health_ink,
     );
 
     let suit_p = snap.suit_pressure_kpa.unwrap_or(29.6);
     let suit_ok = suit_p >= 25.0;
-    let row2_y = heart_y + (q_h * 0.16).clamp(44.0, 56.0);
+    let row2_y = heart_y + hero_sz * 0.62 + (q_h * 0.04).clamp(4.0, 16.0);
     painter.text(
         Pos2::new(tl_rect.min.x + pad_x, row2_y),
         Align2::LEFT_TOP,
         format!(
-            "SBP {:.0}  |  SPO2 {:.0}%  |  {:.1} KPA",
+            "SBP {:.0} | SPO2 {:.0}% | {:.1}KPA",
             snap.sbp_mmhg, snap.spo2_pct, suit_p
         ),
-        FontId::new(28.0, FontFamily::Monospace),
+        FontId::new(sub_sz, FontFamily::Monospace),
         INK_PRIMARY,
     );
 
-    let row3_y = row2_y + (q_h * 0.13).clamp(36.0, 46.0);
-    let droplet_c = Pos2::new(tl_rect.min.x + pad_x + 14.0, row3_y + 16.0);
-    icons::draw_droplet_icon(&painter, droplet_c, 15.0, INK_PRIMARY);
+    let row3_y = row2_y + sub_sz * 1.45;
+    let drop_r = (sub_sz * 0.48).clamp(5.0, 14.0);
+    let droplet_c = Pos2::new(tl_rect.min.x + pad_x + drop_r, row3_y + sub_sz * 0.52);
+    icons::draw_droplet_icon(&painter, droplet_c, drop_r, INK_PRIMARY);
     painter.text(
-        Pos2::new(droplet_c.x + 24.0, row3_y),
+        Pos2::new(droplet_c.x + drop_r * 1.5, row3_y),
         Align2::LEFT_TOP,
         format!(
-            "{:.0} ML/H  |  SI {:.2} {}",
+            "{:.0} ML/H | SI {:.2} {}",
             snap.sweat_ml_per_sec * 3600.0,
             snap.shock_index,
             snap.orthostatic_risk
         ),
-        FontId::new(27.0, FontFamily::Monospace),
+        FontId::new(sub_sz * 0.96, FontFamily::Monospace),
         INK_PRIMARY,
     );
 
-    // Safe HR corridor bar near bottom-left of TL quadrant (stopping well left of center circle)
+    // Safe HR corridor bar near bottom-left of TL quadrant (stopping left of center circle)
     let (hr_lo, hr_hi) = calc::phase_hr_corridor(&snap.active_phase);
-    let corridor_w = (q_w - circle_radius - 58.0).clamp(200.0, 360.0);
+    let corridor_w = (q_w - circle_radius - pad_x * 1.6).clamp(56.0, 360.0);
+    let corridor_h = (q_h * 0.068).clamp(10.0, 22.0);
     let corridor_rect = Rect::from_min_size(
-        Pos2::new(tl_rect.min.x + pad_x, tl_rect.max.y - 36.0),
-        Vec2::new(corridor_w, 22.0),
+        Pos2::new(tl_rect.min.x + pad_x, tl_rect.max.y - pad_y - corridor_h),
+        Vec2::new(corridor_w, corridor_h),
     );
     ui_components::paint_corridor_bar(
         &painter,
@@ -235,12 +242,12 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         },
     );
 
-    // 5-zone spacesuit schematic in top-right of Top-Left quadrant (above center circle)
+    // 5-zone spacesuit schematic in top-right of Top-Left quadrant
     let suit_zone_col = if suit_ok { OUTLINE_VIEW } else { OUTLINE_ALERT };
-    let suit_h = (q_h * 0.38).clamp(96.0, 128.0);
+    let suit_h = (q_h * 0.34).min(q_w * 0.24).clamp(38.0, 124.0);
     let suit_w = suit_h * (110.0 / 130.0);
     let suit_rect = Rect::from_min_size(
-        Pos2::new(tl_rect.max.x - suit_w - 18.0, tl_rect.min.y + 14.0),
+        Pos2::new(tl_rect.max.x - suit_w - pad_x * 0.75, tl_rect.min.y + pad_y * 0.8),
         Vec2::new(suit_w, suit_h),
     );
     ui_components::paint_suit_schematic(
@@ -276,10 +283,10 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         INK_PRIMARY
     };
 
-    // Compass dial in upper-left of Top-Right quadrant (above center circle)
-    let compass_sz = (q_h * 0.36).clamp(92.0, 122.0);
+    // Compass dial in upper-left of Top-Right quadrant
+    let compass_sz = (q_h * 0.34).min(q_w * 0.24).clamp(38.0, 120.0);
     let compass_rect = Rect::from_min_size(
-        Pos2::new(tr_rect.min.x + 22.0, tr_rect.min.y + 16.0),
+        Pos2::new(tr_rect.min.x + pad_x * 0.8, tr_rect.min.y + pad_y * 0.8),
         Vec2::splat(compass_sz),
     );
     ui_components::paint_compass_dial(
@@ -298,36 +305,39 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(tr_right, tr_top),
         Align2::RIGHT_TOP,
         "HUB & NAV",
-        FontId::new(32.0, FontFamily::Proportional),
+        FontId::new(title_sz, FontFamily::Proportional),
         INK_PRIMARY,
     );
     painter.text(
-        Pos2::new(tr_right, tr_top + (q_h * 0.15).clamp(44.0, 56.0)),
+        Pos2::new(tr_right, tr_top + title_sz + (q_h * 0.04).clamp(4.0, 18.0)),
         Align2::RIGHT_TOP,
         format!("{} M", snap.hub_distance_m),
-        FontId::new(58.0, FontFamily::Monospace),
+        FontId::new(hero_sz, FontFamily::Monospace),
         hub_ink,
     );
     painter.text(
-        Pos2::new(tr_right, tr_top + (q_h * 0.36).clamp(108.0, 132.0)),
+        Pos2::new(
+            tr_right,
+            tr_top + title_sz + hero_sz + (q_h * 0.07).clamp(8.0, 28.0),
+        ),
         Align2::RIGHT_TOP,
         format!(
-            "{:03.0}° {}  |  {}",
+            "{:03.0}° {} | {}",
             snap.heading_deg,
             snap.cardinal_heading(),
             snap.active_phase
         ),
-        FontId::new(30.0, FontFamily::Monospace),
+        FontId::new(sub_sz, FontFamily::Monospace),
         INK_PRIMARY,
     );
     painter.text(
-        Pos2::new(tr_right, tr_rect.max.y - 16.0),
+        Pos2::new(tr_right, tr_rect.max.y - pad_y),
         Align2::RIGHT_BOTTOM,
         format!(
-            "{}  |  SOL {:02}  |  {:.1} G",
+            "{} | SOL {:02} | {:.1}G",
             snap.callsign, snap.mission_day, snap.g_load
         ),
-        FontId::new(28.0, FontFamily::Monospace),
+        FontId::new(sub_sz, FontFamily::Monospace),
         INK_PRIMARY,
     );
 
@@ -353,34 +363,38 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(bl_left, bl_top),
         Align2::LEFT_TOP,
         "COMMS",
-        FontId::new(32.0, FontFamily::Proportional),
+        FontId::new(title_sz, FontFamily::Proportional),
         INK_PRIMARY,
     );
 
     painter.text(
-        Pos2::new(bl_left, bl_top + (q_h * 0.16).clamp(44.0, 56.0)),
+        Pos2::new(bl_left, bl_top + title_sz + (q_h * 0.05).clamp(6.0, 18.0)),
         Align2::LEFT_TOP,
         format!(
-            "DELAY {:04.1}M  |  {:.2} AU",
+            "DELAY {:04.1}M | {:.2} AU",
             snap.one_way_light_min, snap.earth_mars_au
         ),
-        FontId::new(28.0, FontFamily::Monospace),
+        FontId::new(sub_sz, FontFamily::Monospace),
         INK_PRIMARY,
     );
 
     painter.text(
-        Pos2::new(bl_left, bl_top + (q_h * 0.30).clamp(84.0, 102.0)),
+        Pos2::new(
+            bl_left,
+            bl_top + title_sz + sub_sz * 1.45 + (q_h * 0.06).clamp(6.0, 22.0),
+        ),
         Align2::LEFT_TOP,
         format!(
-            "QUEUE {}  |  TX {}",
+            "QUEUE {} | TX {}",
             snap.unsynced.total(),
             app.lan_client.frames_sent()
         ),
-        FontId::new(28.0, FontFamily::Monospace),
+        FontId::new(sub_sz, FontFamily::Monospace),
         INK_PRIMARY,
     );
 
-    let sig_rect = Rect::from_min_size(Pos2::new(bl_left, bl_bottom - 54.0), Vec2::splat(50.0));
+    let sig_sz = (q_h * 0.16).min(q_w * 0.14).clamp(20.0, 50.0);
+    let sig_rect = Rect::from_min_size(Pos2::new(bl_left, bl_bottom - sig_sz), Vec2::splat(sig_sz));
     ui_components::paint_signal_bars(
         &painter,
         sig_rect,
@@ -389,10 +403,10 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
     );
 
     painter.text(
-        Pos2::new(bl_left + 64.0, bl_bottom),
+        Pos2::new(bl_left + sig_sz + (pad_x * 0.6).clamp(6.0, 14.0), bl_bottom),
         Align2::LEFT_BOTTOM,
         snap.comms_state.label(),
-        FontId::new(54.0, FontFamily::Monospace),
+        FontId::new(hero_sz * 0.94, FontFamily::Monospace),
         comms_color,
     );
 
@@ -417,15 +431,15 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
 
     icons::draw_hazard_icon(
         &painter,
-        Pos2::new(br_right - 18.0, br_top + 18.0),
-        18.0,
+        Pos2::new(br_right - icon_r, br_top + icon_r),
+        icon_r,
         hazard_color,
     );
     painter.text(
-        Pos2::new(br_right - 46.0, br_top),
+        Pos2::new(br_right - icon_r * 2.4, br_top),
         Align2::RIGHT_TOP,
         "HAZARD & ENV",
-        FontId::new(32.0, FontFamily::Proportional),
+        FontId::new(title_sz, FontFamily::Proportional),
         INK_PRIMARY,
     );
 
@@ -435,18 +449,18 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         .map(|s| s.sans_risk.as_str())
         .unwrap_or("LOW");
     painter.text(
-        Pos2::new(br_right, br_top + (q_h * 0.16).clamp(44.0, 56.0)),
+        Pos2::new(br_right, br_top + title_sz + (q_h * 0.05).clamp(6.0, 18.0)),
         Align2::RIGHT_TOP,
-        format!("CO2 {:.0} PPM  |  SANS {}", snap.cabin_co2_ppm, sans_label),
-        FontId::new(28.0, FontFamily::Monospace),
+        format!("CO2 {:.0} PPM | SANS {}", snap.cabin_co2_ppm, sans_label),
+        FontId::new(sub_sz, FontFamily::Monospace),
         INK_PRIMARY,
     );
 
     painter.text(
-        Pos2::new(br_right, br_bottom - 48.0),
+        Pos2::new(br_right, br_bottom - sub_sz * 1.45),
         Align2::RIGHT_BOTTOM,
         hazard_status,
-        FontId::new(54.0, FontFamily::Proportional),
+        FontId::new(hero_sz * 0.94, FontFamily::Proportional),
         hazard_color,
     );
 
@@ -454,16 +468,16 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Pos2::new(br_right, br_bottom),
         Align2::RIGHT_BOTTOM,
         format!(
-            "O2 {:.1}%  |  {:.2} USV/H",
+            "O2 {:.1}% | {:.2} USV/H",
             snap.cabin_o2_pct.unwrap_or(20.9),
             snap.radiation_usv_hr
         ),
-        FontId::new(30.0, FontFamily::Monospace),
+        FontId::new(sub_sz, FontFamily::Monospace),
         hazard_color,
     );
 
     // -------------------------------------------------------------------------
-    // CENTER CIRCLE BUTTON (CYCLE) — Exact center circle layout preserved
+    // CENTER CIRCLE BUTTON (CYCLE)
     // -------------------------------------------------------------------------
     let circle_border = mode_outline_color(app.mode);
     let circle_fill = panel_fill(hover_in_circle, hover_in_circle && pointer_down);
@@ -475,18 +489,20 @@ fn render_main_hud(ui: &mut egui::Ui, app: &mut BiomonApp) {
         Stroke::new(BORDER_NOMINAL, circle_border),
     );
 
+    let cycle_lbl_sz = (circle_radius * 0.24).clamp(10.0, 34.0);
+    let cycle_mode_sz = (circle_radius * 0.29).clamp(12.0, 40.0);
     painter.text(
-        Pos2::new(center.x, center.y - 24.0),
+        Pos2::new(center.x, center.y - circle_radius * 0.18),
         Align2::CENTER_CENTER,
         "CYCLE",
-        FontId::new(34.0, FontFamily::Proportional),
+        FontId::new(cycle_lbl_sz, FontFamily::Proportional),
         INK_PRIMARY,
     );
     painter.text(
-        Pos2::new(center.x, center.y + 24.0),
+        Pos2::new(center.x, center.y + circle_radius * 0.18),
         Align2::CENTER_CENTER,
         app.mode.cycle_badge_label(),
-        FontId::new(40.0, FontFamily::Proportional),
+        FontId::new(cycle_mode_sz, FontFamily::Proportional),
         INK_PRIMARY,
     );
 }
@@ -520,6 +536,7 @@ fn draw_panel_box(
 fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: QuadrantId) {
     let screen_rect = ui.max_rect();
     let time_sec = ui.input(|i| i.time);
+    let min_dim = screen_rect.width().min(screen_rect.height());
     let is_alert = match quadrant {
         QuadrantId::HealthAndSuit => app.snapshot.alerts.health_danger,
         QuadrantId::HubAndNav => app.snapshot.alerts.hub_danger,
@@ -528,7 +545,8 @@ fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: Quadra
     };
 
     let (border_color, border_width) = quadrant_border(app.mode, is_alert, time_sec);
-    let outer_rect = screen_rect.shrink(6.0);
+    let outer_pad = (min_dim * 0.01).clamp(3.0, 8.0);
+    let outer_rect = screen_rect.shrink(outer_pad);
     let theme = CardTheme::for_mobile(app.mode == AppMode::InputMode, is_alert);
 
     let painter = ui.painter();
@@ -540,107 +558,72 @@ fn render_detail_screen(ui: &mut egui::Ui, app: &mut BiomonApp, quadrant: Quadra
         StrokeKind::Inside,
     );
 
-    let inner_rect = outer_rect.shrink2(Vec2::new(20.0, 14.0));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(inner_rect), |ui| {
-        let ctx = ui.ctx().clone();
+    let pad_x = (outer_rect.width() * 0.022).clamp(8.0, 20.0);
+    let pad_y = (outer_rect.height() * 0.022).clamp(6.0, 14.0);
+    let inner_rect = outer_rect.shrink2(Vec2::new(pad_x, pad_y));
 
-        // Top header bar: Title + Mode/Status Badge + MODE toggle button + BACK button (>= 140x100)
-        ui.horizontal(|ui| {
-            let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
-            let ip = ui.painter();
+    if app.mode == AppMode::ViewMode {
+        // VIEW MODE: No title, no header RETURN button — entire screen is tap-anywhere RETURN.
+        let tap_return = ui.interact(
+            outer_rect,
+            ui.scope_id().with(("view_tap_return", quadrant as u8)),
+            Sense::click(),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner_rect), |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             match quadrant {
-                QuadrantId::HealthAndSuit => {
-                    icons::draw_shield_icon(ip, icon_rect.center(), 20.0, border_color);
-                }
-                QuadrantId::HubAndNav => {
-                    icons::draw_compass_icon(
-                        ip,
-                        icon_rect.center(),
-                        20.0,
-                        border_color,
-                        app.snapshot.heading_deg,
-                    );
-                }
-                QuadrantId::CommsAndDisplay => {
-                    icons::draw_comms_icon(
-                        ip,
-                        icon_rect.center(),
-                        20.0,
-                        border_color,
-                        app.snapshot.comms_state == ConnectionState::Online,
-                    );
-                }
-                QuadrantId::HazardAndEnv => {
-                    icons::draw_hazard_icon(ip, icon_rect.center(), 20.0, border_color);
-                }
+                QuadrantId::HealthAndSuit => render_health_detail(ui, app, theme, is_alert),
+                QuadrantId::HubAndNav => render_hub_nav_detail(ui, app, theme, is_alert),
+                QuadrantId::CommsAndDisplay => render_comms_detail(ui, app, theme, is_alert),
+                QuadrantId::HazardAndEnv => render_hazard_detail(ui, app, theme, is_alert),
             }
+        });
+        if tap_return.clicked() {
+            app.screen = Screen::MainHud;
+        }
+    } else {
+        // INPUT MODE: No top title clutter; interactive controls above a large bottom RETURN button.
+        let gap = (inner_rect.height() * 0.018).clamp(6.0, 12.0);
+        let ret_h = (inner_rect.height() * 0.13).clamp(50.0, 96.0);
+        let content_rect = Rect::from_min_max(
+            inner_rect.min,
+            Pos2::new(inner_rect.max.x, (inner_rect.max.y - ret_h - gap).max(inner_rect.min.y + 40.0)),
+        );
+        let ret_rect = Rect::from_min_max(
+            Pos2::new(inner_rect.min.x, content_rect.max.y + gap),
+            inner_rect.max,
+        );
 
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(quadrant.title())
-                        .size(40.0)
-                        .strong()
-                        .color(INK_PRIMARY),
-                );
-                let status_lvl = if is_alert {
-                    StatusLevel::Critical
-                } else if app.mode == AppMode::InputMode {
-                    StatusLevel::Caution
-                } else {
-                    StatusLevel::Nominal
-                };
-                ui_components::status_badge(ui, status_lvl, app.mode.detail_mode_badge(is_alert));
-            });
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui_components::touch_button(
-                    ui,
-                    &ctx,
-                    ("detail_back_btn", quadrant as u8),
-                    Vec2::new(210.0, 100.0),
-                    "BACK TO HUD",
-                    "",
-                    false,
-                    theme,
-                )
-                .clicked()
-                {
-                    app.screen = Screen::MainHud;
-                }
-
-                ui.add_space(10.0);
-
-                let mode_btn_lbl = match app.mode {
-                    AppMode::ViewMode => "MODE: VIEW",
-                    AppMode::InputMode => "MODE: INPUT",
-                };
-                if ui_components::touch_button(
-                    ui,
-                    &ctx,
-                    ("detail_cycle_mode", quadrant as u8),
-                    Vec2::new(220.0, 100.0),
-                    mode_btn_lbl,
-                    "",
-                    app.mode == AppMode::InputMode,
-                    CardTheme::for_mobile(app.mode == AppMode::InputMode, false),
-                )
-                .clicked()
-                {
-                    app.mode.toggle();
-                }
-            });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| match quadrant {
+                    QuadrantId::HealthAndSuit => render_health_detail(ui, app, theme, is_alert),
+                    QuadrantId::HubAndNav => render_hub_nav_detail(ui, app, theme, is_alert),
+                    QuadrantId::CommsAndDisplay => render_comms_detail(ui, app, theme, is_alert),
+                    QuadrantId::HazardAndEnv => render_hazard_detail(ui, app, theme, is_alert),
+                });
         });
 
-        ui.add_space(10.0);
-
-        match quadrant {
-            QuadrantId::HealthAndSuit => render_health_detail(ui, app, theme, is_alert),
-            QuadrantId::HubAndNav => render_hub_nav_detail(ui, app, theme, is_alert),
-            QuadrantId::CommsAndDisplay => render_comms_detail(ui, app, theme, is_alert),
-            QuadrantId::HazardAndEnv => render_hazard_detail(ui, app, theme, is_alert),
-        }
-    });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(ret_rect), |ui| {
+            let ctx = ui.ctx().clone();
+            let w = ui.available_width();
+            if ui_components::touch_button(
+                ui,
+                &ctx,
+                ("input_return_btn", quadrant as u8),
+                Vec2::new(w, ret_rect.height()),
+                "RETURN",
+                "",
+                false,
+                theme,
+            )
+            .clicked()
+            {
+                app.screen = Screen::MainHud;
+            }
+        });
+    }
 }
 
 fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme, is_alert: bool) {
@@ -648,186 +631,168 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
     if app.mode == AppMode::ViewMode {
         let snap = &app.snapshot;
         let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
+        let avail_w = ui.available_width();
+        let avail_h = ui.available_height();
+        let narrow = avail_w < 540.0;
+        let gap = (avail_h * 0.02).clamp(4.0, 10.0);
 
-        // Row 1: 4 primary physiological cards
-        ui.columns(4, |cols| {
-            ui_components::stat_card(
-                &mut cols[0],
-                116.0,
-                "HEART RATE",
-                &format!("{:.0} BPM", snap.hr_bpm),
-                val_col,
-                theme,
-            );
-            ui_components::stat_card(
-                &mut cols[1],
-                116.0,
+        let cards: [(&str, String, Color32); 8] = [
+            ("HEART RATE", format!("{:.0} BPM", snap.hr_bpm), val_col),
+            (
                 "CUFF SBP / RESP",
-                &format!("{:.0} / {:.0}", snap.sbp_mmhg, snap.resp_brpm),
+                format!("{:.0} / {:.0}", snap.sbp_mmhg, snap.resp_brpm),
                 INK_PRIMARY,
-                theme,
-            );
-            ui_components::stat_card(
-                &mut cols[2],
-                116.0,
+            ),
+            (
                 "SPO2 / TISSUE O2",
-                &format!(
-                    "{:.0}% / {:.0}%",
-                    snap.spo2_pct,
-                    snap.tissue_o2_pct.unwrap_or(93.5)
-                ),
+                format!("{:.0}% / {:.0}%", snap.spo2_pct, snap.tissue_o2_pct.unwrap_or(93.5)),
                 val_col,
-                theme,
-            );
-            ui_components::stat_card(
-                &mut cols[3],
-                116.0,
+            ),
+            (
                 "N2 R-IDX / SHOCK",
-                &format!(
-                    "{:.2} / {:.2}",
-                    snap.blood_n2_idx.unwrap_or(1.08),
-                    snap.shock_index
-                ),
+                format!("{:.2} / {:.2}", snap.blood_n2_idx.unwrap_or(1.08), snap.shock_index),
                 val_col,
-                theme,
-            );
-        });
-
-        ui.add_space(10.0);
-
-        // Row 2: Suit + Metabolic + Osteo/Sleep cards
-        ui.columns(4, |cols| {
-            ui_components::stat_card(
-                &mut cols[0],
-                116.0,
+            ),
+            (
                 "SUIT P / HUMID",
-                &format!(
+                format!(
                     "{:.1} KPA / {:.0}%",
                     snap.suit_pressure_kpa.unwrap_or(29.6),
                     snap.suit_humidity_pct.unwrap_or(38.0)
                 ),
                 INK_PRIMARY,
-                theme,
-            );
-            ui_components::stat_card(
-                &mut cols[1],
-                116.0,
+            ),
+            (
                 "SKIN / BURN RATE",
-                &format!(
-                    "{:.1}C / {:.0} KCAL/H",
-                    snap.skin_temp_c,
-                    snap.kcal_per_sec * 3600.0
-                ),
+                format!("{:.1}C / {:.0} KCAL/H", snap.skin_temp_c, snap.kcal_per_sec * 3600.0),
                 INK_PRIMARY,
-                theme,
-            );
-            ui_components::stat_card(
-                &mut cols[2],
-                116.0,
+            ),
+            (
                 "SWEAT / FLUID IN",
-                &format!(
+                format!(
                     "{:.0} ML/H / {:.0} ML",
                     snap.sweat_ml_per_sec * 3600.0,
                     snap.daily_nutrition.fluid_ml_total
                 ),
                 INK_PRIMARY,
-                theme,
-            );
-            let osteo_risk = snap
-                .osteo_state
-                .as_ref()
-                .map(|o| o.osteo_risk.as_str())
-                .unwrap_or("LOW");
-            ui_components::stat_card(
-                &mut cols[3],
-                116.0,
+            ),
+            (
                 "OSTEO / ORTHO",
-                &format!("{} / {}", osteo_risk, snap.orthostatic_risk),
-                INK_PRIMARY,
-                theme,
-            );
-        });
-
-        ui.add_space(10.0);
-
-        // Row 3: HR Corridor bar + Suit Schematic + Daily Nutrition & Sleep readout
-        ui.columns(2, |cols| {
-            let (lo, hi) = calc::phase_hr_corridor(&snap.active_phase);
-            cols[0].label(
-                egui::RichText::new(format!(
-                    "PHASE {} HR CORRIDOR ({:.0}–{:.0} BPM)  |  EVA {:02}M:{:02}S",
-                    snap.active_phase,
-                    lo,
-                    hi,
-                    snap.eva_elapsed_sec / 60,
-                    snap.eva_elapsed_sec % 60
-                ))
-                .size(28.0)
-                .strong()
-                .color(INK_PRIMARY),
-            );
-            cols[0].add_space(6.0);
-            let col0_w = cols[0].available_width();
-            ui_components::corridor_bar(
-                &mut cols[0],
-                col0_w,
-                snap.hr_bpm as f32,
-                lo as f32,
-                hi as f32,
-                if is_alert {
-                    OUTLINE_ALERT
-                } else {
-                    OUTLINE_VIEW
-                },
-            );
-            cols[0].add_space(10.0);
-            ui_components::stat_card(
-                &mut cols[0],
-                116.0,
-                "SOL NUTRITION (KCAL / NA / CA)",
-                &format!(
-                    "{:.0} KCAL | {:.0}MG NA | {:.0}MG CA",
-                    snap.daily_nutrition.kcal_total,
-                    snap.daily_nutrition.sodium_mg_total,
-                    snap.daily_nutrition.calcium_mg_total
+                format!(
+                    "{} / {}",
+                    snap.osteo_state.as_ref().map(|o| o.osteo_risk.as_str()).unwrap_or("LOW"),
+                    snap.orthostatic_risk
                 ),
                 INK_PRIMARY,
-                theme,
-            );
+            ),
+        ];
 
-            cols[1].horizontal(|ui| {
-                let suit_ok = snap.suit_pressure_kpa.unwrap_or(29.6) >= 25.0;
-                let zc = if suit_ok { OUTLINE_VIEW } else { OUTLINE_ALERT };
-                ui_components::suit_schematic(
-                    ui,
-                    180.0,
-                    [INK_PRIMARY, zc, OUTLINE_VIEW, INK_PRIMARY, zc],
+        let cols_per_row = if narrow { 2 } else { 4 };
+        let card_rows = 8 / cols_per_row;
+        let top_frac = if narrow { 0.62 } else { 0.56 };
+        let row_h = ((avail_h * top_frac - gap * (card_rows as f32)) / card_rows as f32).max(40.0);
+
+        for row_idx in 0..card_rows {
+            let start = row_idx * cols_per_row;
+            ui.columns(cols_per_row, |cols| {
+                for c in 0..cols_per_row {
+                    let (lbl, val, col) = &cards[start + c];
+                    ui_components::stat_card(&mut cols[c], row_h, lbl, val, *col, theme);
+                }
+            });
+            ui.add_space(gap);
+        }
+
+        let rem_h = ui.available_height().max(56.0);
+        let (lo, hi) = calc::phase_hr_corridor(&snap.active_phase);
+        let hdr_text = format!(
+            "PHASE {} HR ({:.0}–{:.0}) | EVA {:02}:{:02}",
+            snap.active_phase,
+            lo,
+            hi,
+            snap.eva_elapsed_sec / 60,
+            snap.eva_elapsed_sec % 60
+        );
+
+        ui.allocate_ui(Vec2::new(avail_w, rem_h), |ui| {
+            ui.columns(2, |cols| {
+                let col0_w = cols[0].available_width();
+                let hdr_chars = hdr_text.chars().count().max(1) as f32;
+                let hdr_sz = (rem_h * 0.12)
+                    .min(col0_w / (hdr_chars * 0.56))
+                    .clamp(9.0, 24.0);
+                cols[0].add(
+                    egui::Label::new(
+                        egui::RichText::new(&hdr_text)
+                            .size(hdr_sz)
+                            .strong()
+                            .color(INK_PRIMARY),
+                    )
+                    .truncate(),
                 );
-                ui.add_space(12.0);
-                let sleep_ep = snap.sleep_epochs.first();
-                let sleep_txt = sleep_ep
-                    .map(|e| {
-                        format!(
-                            "{} ({:.0} BPM)",
-                            e.sleep_state,
-                            e.hr_bpm_avg.unwrap_or(56.0)
-                        )
-                    })
-                    .unwrap_or_else(|| "SLEEP NOMINAL".to_string());
-                ui.vertical(|ui| {
-                    ui_components::stat_card(
+                cols[0].add_space(gap * 0.45);
+                ui_components::corridor_bar(
+                    &mut cols[0],
+                    col0_w,
+                    snap.hr_bpm as f32,
+                    lo as f32,
+                    hi as f32,
+                    if is_alert { OUTLINE_ALERT } else { OUTLINE_VIEW },
+                );
+                cols[0].add_space(gap * 0.55);
+                let nut_h = cols[0].available_height().max(38.0);
+                ui_components::stat_card(
+                    &mut cols[0],
+                    nut_h,
+                    "SOL NUTRITION (KCAL / NA / CA)",
+                    &format!(
+                        "{:.0} KCAL | {:.0}MG NA | {:.0}MG CA",
+                        snap.daily_nutrition.kcal_total,
+                        snap.daily_nutrition.sodium_mg_total,
+                        snap.daily_nutrition.calcium_mg_total
+                    ),
+                    INK_PRIMARY,
+                    theme,
+                );
+
+                cols[1].horizontal(|ui| {
+                    let suit_ok = snap.suit_pressure_kpa.unwrap_or(29.6) >= 25.0;
+                    let zc = if suit_ok { OUTLINE_VIEW } else { OUTLINE_ALERT };
+                    let suit_sz = (rem_h * 0.90).min(ui.available_width() * 0.36).clamp(40.0, 240.0);
+                    ui_components::suit_schematic(
                         ui,
-                        180.0,
-                        &format!("ACTIGRAPHY (TARGET {}M)", snap.sleep_target_min),
-                        &sleep_txt,
-                        INK_PRIMARY,
-                        theme,
+                        suit_sz,
+                        [INK_PRIMARY, zc, OUTLINE_VIEW, INK_PRIMARY, zc],
                     );
+                    ui.add_space(gap);
+                    let sleep_txt = snap
+                        .sleep_epochs
+                        .first()
+                        .map(|e| format!("{} ({:.0} BPM)", e.sleep_state, e.hr_bpm_avg.unwrap_or(56.0)))
+                        .unwrap_or_else(|| "SLEEP NOMINAL".to_string());
+                    ui.vertical(|ui| {
+                        ui_components::stat_card(
+                            ui,
+                            rem_h.max(48.0),
+                            &format!("ACTIGRAPHY (TARGET {}M)", snap.sleep_target_min),
+                            &sleep_txt,
+                            INK_PRIMARY,
+                            theme,
+                        );
+                    });
                 });
             });
         });
     } else {
         // INPUT MODE: Glove-friendly ISS Food Cache selector + Meal % + Log Meal / Hydration
+        let avail_w = ui.available_width();
+        let avail_h = ui.available_height();
+        let narrow = avail_w < 540.0;
+        let gap = (avail_h * 0.022).clamp(4.0, 12.0);
+        let hdr_sz = (avail_h * 0.045).min(avail_w * 0.032).clamp(12.0, 26.0);
+        let body_h = (avail_h - hdr_sz - gap * 3.5).max(160.0);
+        let btn_h = (body_h / if narrow { 5.0 } else { 3.0 }).max(48.0);
+
         let food_count = app.snapshot.food_cache.len();
         let selected_idx = app.selected_food_idx.min(food_count.saturating_sub(1));
 
@@ -836,13 +801,12 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 "ISS RATION & HYDRATION LOG  —  {}",
                 app.status_banner
             ))
-            .size(28.0)
+            .size(hdr_sz)
             .strong()
             .color(INK_PRIMARY),
         );
-        ui.add_space(6.0);
+        ui.add_space(gap);
 
-        // Row 1: 4 Food Cache buttons (>= 140x100)
         let foods: Vec<(usize, String, String)> = app
             .snapshot
             .food_cache
@@ -863,91 +827,147 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
             })
             .collect();
 
-        ui.columns(4, |cols| {
-            for (idx, left, right) in &foods {
-                if let Some(col) = cols.get_mut(*idx) {
-                    let w = col.available_width();
+        if narrow {
+            for r in 0..2 {
+                ui.columns(2, |cols| {
+                    for c in 0..2 {
+                        let i = r * 2 + c;
+                        if let Some((idx, left, right)) = foods.get(i) {
+                            let w = cols[c].available_width();
+                            if ui_components::touch_button(
+                                &mut cols[c],
+                                &ctx,
+                                ("food_select", *idx),
+                                Vec2::new(w, btn_h),
+                                left,
+                                right,
+                                selected_idx == *idx,
+                                CardTheme::INPUT,
+                            )
+                            .clicked()
+                            {
+                                app.selected_food_idx = *idx;
+                            }
+                        }
+                    }
+                });
+                ui.add_space(gap);
+            }
+        } else {
+            ui.columns(4, |cols| {
+                for (idx, left, right) in &foods {
+                    if let Some(col) = cols.get_mut(*idx) {
+                        let w = col.available_width();
+                        if ui_components::touch_button(
+                            col,
+                            &ctx,
+                            ("food_select", *idx),
+                            Vec2::new(w, btn_h),
+                            left,
+                            right,
+                            selected_idx == *idx,
+                            CardTheme::INPUT,
+                        )
+                        .clicked()
+                        {
+                            app.selected_food_idx = *idx;
+                        }
+                    }
+                }
+            });
+            ui.add_space(gap);
+        }
+
+        // Consumption percentage buttons (100%, 50%, 25%, 0%)
+        let pcts = [100_u8, 50, 25, 0];
+        if narrow {
+            for r in 0..2 {
+                ui.columns(2, |cols| {
+                    for c in 0..2 {
+                        let pct = pcts[r * 2 + c];
+                        let w = cols[c].available_width();
+                        let label = format!("PORTION {}%", pct);
+                        if ui_components::touch_button(
+                            &mut cols[c],
+                            &ctx,
+                            ("meal_pct_btn", pct),
+                            Vec2::new(w, btn_h),
+                            &label,
+                            "",
+                            app.selected_meal_pct == pct,
+                            CardTheme::INPUT,
+                        )
+                        .clicked()
+                        {
+                            app.selected_meal_pct = pct;
+                        }
+                    }
+                });
+                ui.add_space(gap);
+            }
+        } else {
+            ui.columns(4, |cols| {
+                for (i, pct) in pcts.iter().enumerate() {
+                    let w = cols[i].available_width();
+                    let label = format!("PORTION {}%", pct);
                     if ui_components::touch_button(
-                        col,
+                        &mut cols[i],
                         &ctx,
-                        ("food_select", *idx),
-                        Vec2::new(w, 108.0),
-                        left,
-                        right,
-                        selected_idx == *idx,
+                        ("meal_pct_btn", *pct),
+                        Vec2::new(w, btn_h),
+                        &label,
+                        "",
+                        app.selected_meal_pct == *pct,
                         CardTheme::INPUT,
                     )
                     .clicked()
                     {
-                        app.selected_food_idx = *idx;
+                        app.selected_meal_pct = *pct;
                     }
                 }
-            }
-        });
+            });
+            ui.add_space(gap);
+        }
 
-        ui.add_space(10.0);
-
-        // Row 2: 4 Consumption percentage buttons (100%, 50%, 25%, 0%)
-        ui.columns(4, |cols| {
-            for (i, pct) in [100_u8, 50, 25, 0].iter().enumerate() {
-                let w = cols[i].available_width();
-                let label = format!("PORTION {}%", pct);
+        // Action commit buttons + live nutrition totals card
+        if narrow {
+            ui.columns(2, |cols| {
+                let w0 = cols[0].available_width();
                 if ui_components::touch_button(
-                    &mut cols[i],
+                    &mut cols[0],
                     &ctx,
-                    ("meal_pct_btn", *pct),
-                    Vec2::new(w, 108.0),
-                    &label,
-                    "",
-                    app.selected_meal_pct == *pct,
+                    "commit_meal_log",
+                    Vec2::new(w0, btn_h),
+                    "LOG MEAL",
+                    &format!("{}%", app.selected_meal_pct),
+                    false,
                     CardTheme::INPUT,
                 )
                 .clicked()
                 {
-                    app.selected_meal_pct = *pct;
+                    app.log_selected_meal();
                 }
-            }
-        });
 
-        ui.add_space(10.0);
-
-        // Row 3: Action commit buttons + live nutrition totals card
-        ui.columns(3, |cols| {
-            let w0 = cols[0].available_width();
-            if ui_components::touch_button(
-                &mut cols[0],
-                &ctx,
-                "commit_meal_log",
-                Vec2::new(w0, 118.0),
-                "LOG SELECTED MEAL",
-                &format!("{}%", app.selected_meal_pct),
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.log_selected_meal();
-            }
-
-            let w1 = cols[1].available_width();
-            if ui_components::touch_button(
-                &mut cols[1],
-                &ctx,
-                "commit_fluid_log",
-                Vec2::new(w1, 118.0),
-                "LOG +250ML POUCH",
-                "FLUID",
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.log_hydration_pouch();
-            }
-
+                let w1 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "commit_fluid_log",
+                    Vec2::new(w1, btn_h),
+                    "+250ML POUCH",
+                    "FLUID",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.log_hydration_pouch();
+                }
+            });
+            ui.add_space(gap);
             ui_components::stat_card(
-                &mut cols[2],
-                118.0,
+                ui,
+                btn_h,
                 "TODAY INTAKE TOTALS",
                 &format!(
                     "{:.0} KCAL | {:.0} ML",
@@ -957,81 +977,130 @@ fn render_health_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                 INK_PRIMARY,
                 CardTheme::VIEW,
             );
-        });
+        } else {
+            ui.columns(3, |cols| {
+                let w0 = cols[0].available_width();
+                if ui_components::touch_button(
+                    &mut cols[0],
+                    &ctx,
+                    "commit_meal_log",
+                    Vec2::new(w0, btn_h),
+                    "LOG SELECTED MEAL",
+                    &format!("{}%", app.selected_meal_pct),
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.log_selected_meal();
+                }
+
+                let w1 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "commit_fluid_log",
+                    Vec2::new(w1, btn_h),
+                    "LOG +250ML POUCH",
+                    "FLUID",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.log_hydration_pouch();
+                }
+
+                ui_components::stat_card(
+                    &mut cols[2],
+                    btn_h,
+                    "TODAY INTAKE TOTALS",
+                    &format!(
+                        "{:.0} KCAL | {:.0} ML",
+                        app.snapshot.daily_nutrition.kcal_total,
+                        app.snapshot.daily_nutrition.fluid_ml_total
+                    ),
+                    INK_PRIMARY,
+                    CardTheme::VIEW,
+                );
+            });
+        }
     }
 }
 
 fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme, is_alert: bool) {
     let ctx = ui.ctx().clone();
     let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
+    let avail_w = ui.available_width();
+    let avail_h = ui.available_height();
+    let narrow = avail_w < 540.0;
+    let gap = (avail_h * 0.022).clamp(4.0, 12.0);
+    let hdr_sz = (avail_h * 0.042).min(avail_w * 0.03).clamp(12.0, 26.0);
+    let top_h = if app.mode == AppMode::ViewMode {
+        ((avail_h - gap * 2.0) / if narrow { 4.0 } else { 3.0 }).max(44.0)
+    } else {
+        let total_rows = if narrow { 6.0 } else { 3.0 };
+        ((avail_h - hdr_sz - gap * total_rows) / total_rows).max(48.0)
+    };
 
-    // Row 1: Range, Bearing, Phase/Sol, G-Load/IMU
-    ui.columns(4, |cols| {
-        ui_components::stat_card(
-            &mut cols[0],
-            118.0,
-            "HABITAT RANGE",
-            &format!("{} M", app.snapshot.hub_distance_m),
-            val_col,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[1],
-            118.0,
+    let nav_cards: [(&str, String, Color32); 4] = [
+        ("HABITAT RANGE", format!("{} M", app.snapshot.hub_distance_m), val_col),
+        (
             "HEADING / CARDINAL",
-            &format!(
-                "{:03.0}° {}",
-                app.snapshot.heading_deg,
-                app.snapshot.cardinal_heading()
-            ),
+            format!("{:03.0}° {}", app.snapshot.heading_deg, app.snapshot.cardinal_heading()),
             INK_PRIMARY,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[2],
-            118.0,
+        ),
+        (
             "PHASE / MISSION SOL",
-            &format!(
-                "{} / SOL {:02}",
-                app.snapshot.active_phase, app.snapshot.mission_day
-            ),
+            format!("{} / SOL {:02}", app.snapshot.active_phase, app.snapshot.mission_day),
             INK_PRIMARY,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[3],
-            118.0,
+        ),
+        (
             "G-LOAD / IMU ACT",
-            &format!(
-                "{:.2} G / {:.2}",
-                app.snapshot.g_load, app.snapshot.imu_activity_idx
-            ),
+            format!("{:.2} G / {:.2}", app.snapshot.g_load, app.snapshot.imu_activity_idx),
             INK_PRIMARY,
-            theme,
-        );
-    });
+        ),
+    ];
 
-    ui.add_space(12.0);
+    if narrow {
+        for r in 0..2 {
+            ui.columns(2, |cols| {
+                for c in 0..2 {
+                    let (lbl, val, col) = &nav_cards[r * 2 + c];
+                    ui_components::stat_card(&mut cols[c], top_h, lbl, val, *col, theme);
+                }
+            });
+            ui.add_space(gap);
+        }
+    } else {
+        ui.columns(4, |cols| {
+            for c in 0..4 {
+                let (lbl, val, col) = &nav_cards[c];
+                ui_components::stat_card(&mut cols[c], top_h, lbl, val, *col, theme);
+            }
+        });
+        ui.add_space(gap);
+    }
 
     if app.mode == AppMode::ViewMode {
+        let rem_h = (avail_h - (top_h + gap) * if narrow { 2.0 } else { 1.0 }).max(96.0);
+        let pair_h = ((rem_h - gap) * 0.5).max(44.0);
+        let compass_sz = (rem_h * 0.92).min(avail_w * 0.24).clamp(54.0, 280.0);
+
         ui.columns(2, |cols| {
             cols[0].horizontal(|ui| {
                 ui_components::compass_dial(
                     ui,
-                    220.0,
+                    compass_sz,
                     app.snapshot.heading_deg,
                     app.snapshot.target_bearing_deg,
-                    if is_alert {
-                        OUTLINE_ALERT
-                    } else {
-                        OUTLINE_INPUT
-                    },
+                    if is_alert { OUTLINE_ALERT } else { OUTLINE_INPUT },
                 );
-                ui.add_space(16.0);
+                ui.add_space(gap);
                 ui.vertical(|ui| {
                     ui_components::stat_card(
                         ui,
-                        104.0,
+                        pair_h,
                         "CREW PROFILE",
                         &format!(
                             "{} ({:.0}KG {:.0}CM)",
@@ -1040,10 +1109,10 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
                         INK_PRIMARY,
                         theme,
                     );
-                    ui.add_space(10.0);
+                    ui.add_space(gap);
                     ui_components::stat_card(
                         ui,
-                        104.0,
+                        pair_h,
                         "CABIN MOTION / TEMP",
                         &format!(
                             "IDX {:.2} / {:.1}C",
@@ -1058,7 +1127,7 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
 
             ui_components::stat_card(
                 &mut cols[1],
-                104.0,
+                pair_h,
                 "EARTH–MARS EPHEMERIS",
                 &format!(
                     "{:.2} AU  |  {:04.1} MIN LIGHT",
@@ -1067,10 +1136,10 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
                 INK_PRIMARY,
                 theme,
             );
-            cols[1].add_space(10.0);
+            cols[1].add_space(gap);
             ui_components::stat_card(
                 &mut cols[1],
-                104.0,
+                pair_h,
                 "TELEMETRY SEQ / UTC",
                 &format!(
                     "#{}  {}",
@@ -1085,167 +1154,270 @@ fn render_hub_nav_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardThem
             );
         });
     } else {
-        // INPUT MODE: Mission Phase Switcher + Heading & Range simulation controls (>= 140x100)
+        // INPUT MODE: Mission Phase Switcher + Heading & Range simulation controls
         ui.label(
             egui::RichText::new("GLOVE FLIGHT PHASE & NAVIGATION CONTROLS")
-                .size(28.0)
+                .size(hdr_sz)
                 .strong()
                 .color(INK_PRIMARY),
         );
-        ui.add_space(6.0);
+        ui.add_space(gap);
 
-        ui.columns(4, |cols| {
-            for (i, phase) in ["LAUNCH", "ORBIT", "EVA", "REENTRY"].iter().enumerate() {
-                let w = cols[i].available_width();
-                let active = app.snapshot.active_phase.eq_ignore_ascii_case(phase);
+        let phases = ["LAUNCH", "ORBIT", "EVA", "REENTRY"];
+        if narrow {
+            for r in 0..2 {
+                ui.columns(2, |cols| {
+                    for c in 0..2 {
+                        let phase = phases[r * 2 + c];
+                        let w = cols[c].available_width();
+                        let active = app.snapshot.active_phase.eq_ignore_ascii_case(phase);
+                        if ui_components::touch_button(
+                            &mut cols[c],
+                            &ctx,
+                            ("nav_phase_btn", phase),
+                            Vec2::new(w, top_h),
+                            phase,
+                            if active { "ACTIVE" } else { "" },
+                            active,
+                            CardTheme::INPUT,
+                        )
+                        .clicked()
+                        {
+                            app.set_mission_phase(phase);
+                        }
+                    }
+                });
+                ui.add_space(gap);
+            }
+        } else {
+            ui.columns(4, |cols| {
+                for (i, phase) in phases.iter().enumerate() {
+                    let w = cols[i].available_width();
+                    let active = app.snapshot.active_phase.eq_ignore_ascii_case(phase);
+                    if ui_components::touch_button(
+                        &mut cols[i],
+                        &ctx,
+                        ("nav_phase_btn", *phase),
+                        Vec2::new(w, top_h),
+                        phase,
+                        if active { "ACTIVE" } else { "" },
+                        active,
+                        CardTheme::INPUT,
+                    )
+                    .clicked()
+                    {
+                        app.set_mission_phase(phase);
+                    }
+                }
+            });
+            ui.add_space(gap);
+        }
+
+        if narrow {
+            ui.columns(2, |cols| {
+                let w0 = cols[0].available_width();
                 if ui_components::touch_button(
-                    &mut cols[i],
+                    &mut cols[0],
                     &ctx,
-                    ("nav_phase_btn", *phase),
-                    Vec2::new(w, 112.0),
-                    phase,
-                    if active { "ACTIVE" } else { "" },
-                    active,
+                    "nav_hdg_left",
+                    Vec2::new(w0, top_h),
+                    "HDG -45°",
+                    "",
+                    false,
                     CardTheme::INPUT,
                 )
                 .clicked()
                 {
-                    app.set_mission_phase(phase);
+                    app.snapshot.heading_deg = (app.snapshot.heading_deg - 45.0).rem_euclid(360.0);
                 }
-            }
-        });
 
-        ui.add_space(10.0);
+                let w1 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "nav_hdg_right",
+                    Vec2::new(w1, top_h),
+                    "HDG +45°",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.heading_deg = (app.snapshot.heading_deg + 45.0).rem_euclid(360.0);
+                }
+            });
+            ui.add_space(gap);
+            ui.columns(2, |cols| {
+                let w2 = cols[0].available_width();
+                if ui_components::touch_button(
+                    &mut cols[0],
+                    &ctx,
+                    "nav_range_plus",
+                    Vec2::new(w2, top_h),
+                    "RANGE +250M",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.hub_distance_m = (app.snapshot.hub_distance_m + 250).min(3000);
+                    app.snapshot.recompute_derived();
+                }
 
-        ui.columns(4, |cols| {
-            let w0 = cols[0].available_width();
-            if ui_components::touch_button(
-                &mut cols[0],
-                &ctx,
-                "nav_hdg_left",
-                Vec2::new(w0, 112.0),
-                "HEADING -45°",
-                "",
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.snapshot.heading_deg = (app.snapshot.heading_deg - 45.0).rem_euclid(360.0);
-            }
+                let w3 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "nav_range_home",
+                    Vec2::new(w3, top_h),
+                    "HUB 222M",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.hub_distance_m = 222;
+                    app.snapshot.recompute_derived();
+                }
+            });
+        } else {
+            ui.columns(4, |cols| {
+                let w0 = cols[0].available_width();
+                if ui_components::touch_button(
+                    &mut cols[0],
+                    &ctx,
+                    "nav_hdg_left",
+                    Vec2::new(w0, top_h),
+                    "HEADING -45°",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.heading_deg = (app.snapshot.heading_deg - 45.0).rem_euclid(360.0);
+                }
 
-            let w1 = cols[1].available_width();
-            if ui_components::touch_button(
-                &mut cols[1],
-                &ctx,
-                "nav_hdg_right",
-                Vec2::new(w1, 112.0),
-                "HEADING +45°",
-                "",
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.snapshot.heading_deg = (app.snapshot.heading_deg + 45.0).rem_euclid(360.0);
-            }
+                let w1 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "nav_hdg_right",
+                    Vec2::new(w1, top_h),
+                    "HEADING +45°",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.heading_deg = (app.snapshot.heading_deg + 45.0).rem_euclid(360.0);
+                }
 
-            let w2 = cols[2].available_width();
-            if ui_components::touch_button(
-                &mut cols[2],
-                &ctx,
-                "nav_range_plus",
-                Vec2::new(w2, 112.0),
-                "RANGE +250 M",
-                "",
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.snapshot.hub_distance_m = (app.snapshot.hub_distance_m + 250).min(3000);
-                app.snapshot.recompute_derived();
-            }
+                let w2 = cols[2].available_width();
+                if ui_components::touch_button(
+                    &mut cols[2],
+                    &ctx,
+                    "nav_range_plus",
+                    Vec2::new(w2, top_h),
+                    "RANGE +250 M",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.hub_distance_m = (app.snapshot.hub_distance_m + 250).min(3000);
+                    app.snapshot.recompute_derived();
+                }
 
-            let w3 = cols[3].available_width();
-            if ui_components::touch_button(
-                &mut cols[3],
-                &ctx,
-                "nav_range_home",
-                Vec2::new(w3, 112.0),
-                "RETURN HUB 222M",
-                "",
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.snapshot.hub_distance_m = 222;
-                app.snapshot.recompute_derived();
-            }
-        });
+                let w3 = cols[3].available_width();
+                if ui_components::touch_button(
+                    &mut cols[3],
+                    &ctx,
+                    "nav_range_home",
+                    Vec2::new(w3, top_h),
+                    "RETURN HUB 222M",
+                    "",
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.snapshot.hub_distance_m = 222;
+                    app.snapshot.recompute_derived();
+                }
+            });
+        }
     }
 }
 
 fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme, is_alert: bool) {
     let ctx = ui.ctx().clone();
     let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
+    let avail_w = ui.available_width();
+    let avail_h = ui.available_height();
+    let narrow = avail_w < 540.0;
+    let gap = (avail_h * 0.022).clamp(4.0, 12.0);
+    let rows_total = if narrow {
+        if app.mode == AppMode::ViewMode { 4.0 } else { 5.0 }
+    } else {
+        3.0
+    };
+    let row_h = ((avail_h - gap * (rows_total - 1.0)) / rows_total).max(44.0);
 
-    // Row 1: Link State, Target Hub TCP, Unsynced Queue Breakdown, Light Delay
-    ui.columns(4, |cols| {
-        ui_components::stat_card(
-            &mut cols[0],
-            118.0,
-            "SURFACE LAN LINK",
-            app.snapshot.comms_state.label(),
-            val_col,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[1],
-            118.0,
-            "HUB ENDPOINT",
-            app.lan_client.target_hub_addr(),
-            INK_PRIMARY,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[2],
-            118.0,
+    let top_cards: [(&str, String, Color32); 4] = [
+        ("SURFACE LAN LINK", app.snapshot.comms_state.label().to_string(), val_col),
+        ("HUB ENDPOINT", app.lan_client.target_hub_addr().to_string(), INK_PRIMARY),
+        (
             "UNSYNCED RECORDS",
-            &format!(
-                "{} TOTAL ({} INP)",
-                app.snapshot.unsynced.total(),
-                app.snapshot.unsynced.crew_inputs
-            ),
+            format!("{} TOTAL ({} INP)", app.snapshot.unsynced.total(), app.snapshot.unsynced.crew_inputs),
             INK_PRIMARY,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[3],
-            118.0,
+        ),
+        (
             "ONE-WAY LIGHT DELAY",
-            &format!("{:04.1} MIN", app.snapshot.one_way_light_min),
+            format!("{:04.1} MIN", app.snapshot.one_way_light_min),
             INK_PRIMARY,
-            theme,
-        );
-    });
+        ),
+    ];
 
-    ui.add_space(12.0);
+    if narrow {
+        for r in 0..2 {
+            ui.columns(2, |cols| {
+                for c in 0..2 {
+                    let (lbl, val, col) = &top_cards[r * 2 + c];
+                    ui_components::stat_card(&mut cols[c], row_h, lbl, val, *col, theme);
+                }
+            });
+            ui.add_space(gap);
+        }
+    } else {
+        ui.columns(4, |cols| {
+            for c in 0..4 {
+                let (lbl, val, col) = &top_cards[c];
+                ui_components::stat_card(&mut cols[c], row_h, lbl, val, *col, theme);
+            }
+        });
+        ui.add_space(gap);
+    }
 
     // Row 2: Queue breakdown + Signal Bars + Recent Crew Input Queue
+    let sig_sz = (row_h * 0.85).min(avail_w * 0.16).clamp(32.0, 160.0);
     ui.columns(2, |cols| {
         cols[0].horizontal(|ui| {
             ui_components::signal_bars(
                 ui,
-                110.0,
+                sig_sz,
                 app.snapshot.comms_state == ConnectionState::Online,
             );
-            ui.add_space(14.0);
+            ui.add_space(gap);
             ui.vertical(|ui| {
                 ui_components::stat_card(
                     ui,
-                    118.0,
+                    row_h,
                     "RING BUFFER / SLEEP / DAILY",
                     &format!(
                         "{} TEL | {} SLP | {} DLY",
@@ -1274,7 +1446,7 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
             .unwrap_or_else(|| "QUEUE EMPTY".to_string());
         ui_components::stat_card(
             &mut cols[1],
-            118.0,
+            row_h,
             "LATEST LOGGED CREW INPUT",
             &latest_input_str,
             INK_PRIMARY,
@@ -1282,56 +1454,171 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
         );
     });
 
-    ui.add_space(14.0);
+    ui.add_space(gap);
 
-    // Row 3: Interactive Sync / Link Test buttons (available in both modes, >= 140x100)
-    ui.columns(3, |cols| {
-        let w0 = cols[0].available_width();
-        if ui_components::touch_button(
-            &mut cols[0],
-            &ctx,
-            "comms_flush_btn",
-            Vec2::new(w0, 118.0),
-            "FLUSH & SYNC QUEUE",
-            &format!("{} REC", app.snapshot.unsynced.total()),
-            false,
-            CardTheme::INPUT,
-        )
-        .clicked()
-        {
-            app.sync_queued_packets();
-        }
+    if app.mode == AppMode::ViewMode {
+        // Pure read-only telemetry row in ViewMode (keeps tap-anywhere return active)
+        ui.columns(2, |cols| {
+            ui_components::stat_card(
+                &mut cols[0],
+                row_h,
+                "EARTH–MARS DISTANCE",
+                &format!("{:.3} AU", app.snapshot.earth_mars_au),
+                INK_PRIMARY,
+                theme,
+            );
+            ui_components::stat_card(
+                &mut cols[1],
+                row_h,
+                "FRAMES TRANSMITTED",
+                &format!("{} PKTS", app.lan_client.frames_sent()),
+                INK_PRIMARY,
+                theme,
+            );
+        });
+    } else if narrow {
+        // Row 3 (narrow): 2 buttons + full-width stat card
+        ui.columns(2, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "comms_flush_btn",
+                Vec2::new(w0, row_h),
+                "FLUSH & SYNC",
+                &format!("{} REC", app.snapshot.unsynced.total()),
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.sync_queued_packets();
+            }
 
-        let w1 = cols[1].available_width();
-        let toggle_lbl = match app.snapshot.comms_state {
-            ConnectionState::Online => "SIMULATE BLACKOUT",
-            ConnectionState::Offline => "RESTORE LAN LINK",
-        };
-        if ui_components::touch_button(
-            &mut cols[1],
-            &ctx,
-            "comms_toggle_link",
-            Vec2::new(w1, 118.0),
-            toggle_lbl,
-            "",
-            app.snapshot.comms_state == ConnectionState::Offline,
-            CardTheme::INPUT,
-        )
-        .clicked()
-        {
-            let new_state = app.lan_client.toggle_connection_state();
-            app.snapshot.comms_state = new_state;
-            app.snapshot.recompute_derived();
-            app.status_banner = format!("LAN STATE: {}", new_state.label());
-        }
-
+            let w1 = cols[1].available_width();
+            let toggle_lbl = match app.snapshot.comms_state {
+                ConnectionState::Online => "BLACKOUT",
+                ConnectionState::Offline => "RESTORE LAN",
+            };
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "comms_toggle_link",
+                Vec2::new(w1, row_h),
+                toggle_lbl,
+                "",
+                app.snapshot.comms_state == ConnectionState::Offline,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                let new_state = app.lan_client.toggle_connection_state();
+                app.snapshot.comms_state = new_state;
+                app.snapshot.recompute_derived();
+                app.status_banner = format!("LAN STATE: {}", new_state.label());
+            }
+        });
+        ui.add_space(gap);
         ui_components::stat_card(
-            &mut cols[2],
-            118.0,
+            ui,
+            row_h,
             "FRAMES TRANSMITTED",
             &format!("{} PKTS", app.lan_client.frames_sent()),
             INK_PRIMARY,
             theme,
+        );
+    } else {
+        // Row 3: Interactive Sync / Link Test buttons in InputMode
+        ui.columns(3, |cols| {
+            let w0 = cols[0].available_width();
+            if ui_components::touch_button(
+                &mut cols[0],
+                &ctx,
+                "comms_flush_btn",
+                Vec2::new(w0, row_h),
+                "FLUSH & SYNC QUEUE",
+                &format!("{} REC", app.snapshot.unsynced.total()),
+                false,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                app.sync_queued_packets();
+            }
+
+            let w1 = cols[1].available_width();
+            let toggle_lbl = match app.snapshot.comms_state {
+                ConnectionState::Online => "SIMULATE BLACKOUT",
+                ConnectionState::Offline => "RESTORE LAN LINK",
+            };
+            if ui_components::touch_button(
+                &mut cols[1],
+                &ctx,
+                "comms_toggle_link",
+                Vec2::new(w1, row_h),
+                toggle_lbl,
+                "",
+                app.snapshot.comms_state == ConnectionState::Offline,
+                CardTheme::INPUT,
+            )
+            .clicked()
+            {
+                let new_state = app.lan_client.toggle_connection_state();
+                app.snapshot.comms_state = new_state;
+                app.snapshot.recompute_derived();
+                app.status_banner = format!("LAN STATE: {}", new_state.label());
+            }
+
+            ui_components::stat_card(
+                &mut cols[2],
+                row_h,
+                "FRAMES TRANSMITTED",
+                &format!("{} PKTS", app.lan_client.frames_sent()),
+                INK_PRIMARY,
+                theme,
+            );
+        });
+    }
+}
+
+fn render_directive_card(
+    ui: &mut egui::Ui,
+    height: f32,
+    directive: &str,
+    theme: CardTheme,
+    is_alert: bool,
+) {
+    let h = height.max(48.0);
+    let w = ui.available_width().max(48.0);
+    let rect = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover()).0;
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(10),
+        theme.bg,
+        Stroke::new(theme.stroke_width, theme.border),
+        StrokeKind::Inside,
+    );
+    let pad_x = (rect.width() * 0.03).clamp(8.0, 18.0);
+    let pad_y = (rect.height() * 0.12).clamp(6.0, 14.0);
+    let inner = rect.shrink2(Vec2::new(pad_x, pad_y));
+    let lbl_sz = (inner.height() * 0.24).min(inner.width() * 0.04).clamp(10.0, 20.0);
+    let val_sz = (inner.height() * 0.42).min(inner.width() * 0.048).clamp(12.0, 28.0);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+        ui.label(
+            egui::RichText::new("ACTIVE PROTOCOL DIRECTIVE")
+                .size(lbl_sz)
+                .color(INK_PRIMARY),
+        );
+        ui.add_space((inner.height() * 0.06).clamp(2.0, 8.0));
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(directive)
+                    .size(val_sz)
+                    .strong()
+                    .monospace()
+                    .color(if is_alert { OUTLINE_ALERT } else { INK_PRIMARY }),
+            )
+            .wrap(),
         );
     });
 }
@@ -1339,63 +1626,103 @@ fn render_comms_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme,
 fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme, is_alert: bool) {
     let ctx = ui.ctx().clone();
     let val_col = if is_alert { OUTLINE_ALERT } else { INK_PRIMARY };
+    let avail_w = ui.available_width();
+    let avail_h = ui.available_height();
+    let narrow = avail_w < 540.0;
+    let gap = (avail_h * 0.022).clamp(4.0, 12.0);
+    let card_rows = match (app.mode == AppMode::ViewMode, narrow) {
+        (true, true) => 3.0,
+        (true, false) => 2.0,
+        (false, true) => 5.0,
+        (false, false) => 3.0,
+    };
+    let rows_total = card_rows + 0.85;
+    let row_h = ((avail_h - gap * card_rows) / rows_total).max(42.0);
+    let dir_h = (avail_h - (row_h + gap) * card_rows).max(48.0);
 
-    // Row 1: Environmental & SANS telemetry cards
-    ui.columns(4, |cols| {
-        ui_components::stat_card(
-            &mut cols[0],
-            114.0,
-            "RADIATION FLUX",
-            &format!("{:.2} USV/H", app.snapshot.radiation_usv_hr),
-            val_col,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[1],
-            114.0,
+    let sans_str = app
+        .snapshot
+        .sans_state
+        .as_ref()
+        .map(|s| format!("{} ({:.0})", s.sans_risk, s.sans_score))
+        .unwrap_or_else(|| "LOW (24)".to_string());
+
+    let top_cards: [(&str, String, Color32); 4] = [
+        ("RADIATION FLUX", format!("{:.2} USV/H", app.snapshot.radiation_usv_hr), val_col),
+        (
             "CABIN CO2 / O2",
-            &format!(
-                "{:.0} PPM / {:.1}%",
-                app.snapshot.cabin_co2_ppm,
-                app.snapshot.cabin_o2_pct.unwrap_or(20.9)
-            ),
+            format!("{:.0} PPM / {:.1}%", app.snapshot.cabin_co2_ppm, app.snapshot.cabin_o2_pct.unwrap_or(20.9)),
             val_col,
-            theme,
-        );
-        ui_components::stat_card(
-            &mut cols[2],
-            114.0,
+        ),
+        (
             "CABIN P / HUMID",
-            &format!(
+            format!(
                 "{:.1} KPA / {:.0}%",
                 app.snapshot.cabin_pressure_kpa.unwrap_or(101.3),
                 app.snapshot.cabin_humidity_pct.unwrap_or(44.0)
             ),
             INK_PRIMARY,
-            theme,
-        );
-        let sans_str = app
-            .snapshot
-            .sans_state
-            .as_ref()
-            .map(|s| format!("{} ({:.0})", s.sans_risk, s.sans_score))
-            .unwrap_or_else(|| "LOW (24)".to_string());
-        ui_components::stat_card(
-            &mut cols[3],
-            114.0,
-            "SANS RISK TIER",
-            &sans_str,
-            INK_PRIMARY,
-            theme,
-        );
-    });
+        ),
+        ("SANS RISK TIER", sans_str, INK_PRIMARY),
+    ];
 
-    ui.add_space(10.0);
+    if narrow {
+        for r in 0..2 {
+            ui.columns(2, |cols| {
+                for c in 0..2 {
+                    let (lbl, val, col) = &top_cards[r * 2 + c];
+                    ui_components::stat_card(&mut cols[c], row_h, lbl, val, *col, theme);
+                }
+            });
+            ui.add_space(gap);
+        }
+    } else {
+        ui.columns(4, |cols| {
+            for c in 0..4 {
+                let (lbl, val, col) = &top_cards[c];
+                ui_components::stat_card(&mut cols[c], row_h, lbl, val, *col, theme);
+            }
+        });
+        ui.add_space(gap);
+    }
 
-    // Row 2: Selector buttons for the 5 deterministic Offline Protocols
     let proto_count = app.snapshot.protocols.len();
     let sel_idx = app.selected_protocol_idx.min(proto_count.saturating_sub(1));
+    let unack = app
+        .snapshot
+        .local_alerts
+        .iter()
+        .filter(|a| a.acknowledged == 0)
+        .count();
 
+    if app.mode == AppMode::ViewMode {
+        // Pure read-only view (tap anywhere returns to HUD)
+        if let Some(proto) = app.snapshot.protocols.get(sel_idx).cloned() {
+            ui.columns(2, |cols| {
+                ui_components::stat_card(
+                    &mut cols[0],
+                    row_h,
+                    &format!("{} ({})", proto.protocol_id, proto.applicable_phase),
+                    &proto.hazard_category,
+                    INK_PRIMARY,
+                    theme,
+                );
+                ui_components::stat_card(
+                    &mut cols[1],
+                    row_h,
+                    "N2 R-INDEX / OPEN ALERTS",
+                    &format!("R={:.2} | {} OPEN", app.snapshot.blood_n2_idx.unwrap_or(1.08), unack),
+                    if unack > 0 { OUTLINE_ALERT } else { INK_PRIMARY },
+                    theme,
+                );
+            });
+            ui.add_space(gap);
+            render_directive_card(ui, dir_h, &proto.immediate_action, theme, is_alert);
+        }
+        return;
+    }
+
+    // INPUT MODE: Interactive protocol selectors + O2 prebreathe + Ack Alerts
     let proto_cats: Vec<(usize, String)> = app
         .snapshot
         .protocols
@@ -1412,7 +1739,7 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
                     &mut cols[*i],
                     &ctx,
                     ("proto_sel_btn", *i),
-                    Vec2::new(w, 102.0),
+                    Vec2::new(w, row_h),
                     cat,
                     "",
                     sel_idx == *i,
@@ -1426,65 +1753,98 @@ fn render_hazard_detail(ui: &mut egui::Ui, app: &mut BiomonApp, theme: CardTheme
         });
     }
 
-    ui.add_space(10.0);
+    ui.add_space(gap);
 
-    // Row 3: Selected Offline Protocol Directive + Countermeasure Actions
     if let Some(proto) = app.snapshot.protocols.get(sel_idx).cloned() {
-        ui.columns(3, |cols| {
+        if narrow {
+            ui.columns(2, |cols| {
+                let w1 = cols[0].available_width();
+                if ui_components::touch_button(
+                    &mut cols[0],
+                    &ctx,
+                    "prebreathe_step_btn",
+                    Vec2::new(w1, row_h),
+                    "O2 +10M",
+                    &format!("R={:.2}", app.snapshot.blood_n2_idx.unwrap_or(1.08)),
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.step_prebreathe_washout(600.0);
+                }
+
+                let w2 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "ack_local_alerts_btn",
+                    Vec2::new(w2, row_h),
+                    "ACK ALERTS",
+                    &format!("{} OPEN", unack),
+                    unack > 0,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.acknowledge_alerts();
+                }
+            });
+            ui.add_space(gap);
             ui_components::stat_card(
-                &mut cols[0],
-                122.0,
+                ui,
+                row_h,
                 &format!("{} ({})", proto.protocol_id, proto.applicable_phase),
                 &proto.hazard_category,
                 INK_PRIMARY,
                 theme,
             );
+        } else {
+            ui.columns(3, |cols| {
+                ui_components::stat_card(
+                    &mut cols[0],
+                    row_h,
+                    &format!("{} ({})", proto.protocol_id, proto.applicable_phase),
+                    &proto.hazard_category,
+                    INK_PRIMARY,
+                    theme,
+                );
 
-            let w1 = cols[1].available_width();
-            if ui_components::touch_button(
-                &mut cols[1],
-                &ctx,
-                "prebreathe_step_btn",
-                Vec2::new(w1, 122.0),
-                "O2 PREBREATHE +10M",
-                &format!("R={:.2}", app.snapshot.blood_n2_idx.unwrap_or(1.08)),
-                false,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.step_prebreathe_washout(600.0);
-            }
+                let w1 = cols[1].available_width();
+                if ui_components::touch_button(
+                    &mut cols[1],
+                    &ctx,
+                    "prebreathe_step_btn",
+                    Vec2::new(w1, row_h),
+                    "O2 PREBREATHE +10M",
+                    &format!("R={:.2}", app.snapshot.blood_n2_idx.unwrap_or(1.08)),
+                    false,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.step_prebreathe_washout(600.0);
+                }
 
-            let unack = app
-                .snapshot
-                .local_alerts
-                .iter()
-                .filter(|a| a.acknowledged == 0)
-                .count();
-            let w2 = cols[2].available_width();
-            if ui_components::touch_button(
-                &mut cols[2],
-                &ctx,
-                "ack_local_alerts_btn",
-                Vec2::new(w2, 122.0),
-                "ACK LOCAL ALERTS",
-                &format!("{} OPEN", unack),
-                unack > 0,
-                CardTheme::INPUT,
-            )
-            .clicked()
-            {
-                app.acknowledge_alerts();
-            }
-        });
+                let w2 = cols[2].available_width();
+                if ui_components::touch_button(
+                    &mut cols[2],
+                    &ctx,
+                    "ack_local_alerts_btn",
+                    Vec2::new(w2, row_h),
+                    "ACK LOCAL ALERTS",
+                    &format!("{} OPEN", unack),
+                    unack > 0,
+                    CardTheme::INPUT,
+                )
+                .clicked()
+                {
+                    app.acknowledge_alerts();
+                }
+            });
+        }
 
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(format!("DIRECTIVE: {}", proto.immediate_action))
-                .size(28.0)
-                .strong()
-                .color(if is_alert { OUTLINE_ALERT } else { INK_PRIMARY }),
-        );
+        ui.add_space(gap);
+        render_directive_card(ui, dir_h, &proto.immediate_action, theme, is_alert);
     }
 }

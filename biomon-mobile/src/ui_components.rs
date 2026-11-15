@@ -140,12 +140,10 @@ pub fn stat_card(
     val_color: Color32,
     theme: CardTheme,
 ) {
-    let h = height.max(104.0);
+    let h = height.max(38.0);
+    let w = ui.available_width().max(48.0);
     let rect = ui
-        .allocate_exact_size(
-            Vec2::new(ui.available_width().max(160.0), h),
-            Sense::hover(),
-        )
+        .allocate_exact_size(Vec2::new(w, h), Sense::hover())
         .0;
     let p = ui.painter();
     p.rect(
@@ -156,9 +154,17 @@ pub fn stat_card(
         StrokeKind::Inside,
     );
 
-    let inner = rect.shrink2(Vec2::new(16.0, 10.0));
-    let lbl_sz = 26.0_f32;
-    let val_sz = (h * 0.42).clamp(36.0, 56.0);
+    let pad_x = (rect.width() * 0.06).clamp(6.0, 16.0);
+    let pad_y = (rect.height() * 0.09).clamp(4.0, 12.0);
+    let inner = rect.shrink2(Vec2::new(pad_x, pad_y));
+    let lbl_chars = label.chars().count().max(1) as f32;
+    let lbl_sz = (inner.height() * 0.24)
+        .min(inner.width() / (lbl_chars * 0.56))
+        .clamp(9.0, 24.0);
+    let val_chars = value.chars().count().max(1) as f32;
+    let val_sz = (inner.height() * 0.48)
+        .min(inner.width() / (val_chars * 0.62))
+        .clamp(12.0, 52.0);
 
     p.text(
         inner.left_top(),
@@ -188,7 +194,7 @@ pub fn touch_button(
     selected: bool,
     theme: CardTheme,
 ) -> egui::Response {
-    let desired = Vec2::new(min_size.x.max(140.0), min_size.y.max(100.0));
+    let desired = Vec2::new(min_size.x.max(48.0), min_size.y.max(44.0));
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -215,13 +221,24 @@ pub fn touch_button(
         StrokeKind::Inside,
     );
 
-    let inset = 18.0;
+    let inset = (rect.width() * 0.06).clamp(8.0, 18.0);
+    let avail_w = (rect.width() - inset * 2.0).max(24.0);
+    let left_chars = left.chars().count().max(1) as f32;
+    let right_chars = right.chars().count() as f32;
+    let w_factor = if right.is_empty() {
+        left_chars * 0.56
+    } else {
+        left_chars * 0.56 + right_chars * 0.50 + 1.5
+    };
+    let left_sz = (rect.height() * 0.34).min(avail_w / w_factor).clamp(11.0, 28.0);
+    let right_sz = (left_sz * 0.86).clamp(10.0, 24.0);
+
     if right.is_empty() {
         p.text(
             rect.center(),
             Align2::CENTER_CENTER,
             left,
-            FontId::new(28.0, FontFamily::Proportional),
+            FontId::new(left_sz, FontFamily::Proportional),
             palette::INK_PRIMARY,
         );
     } else {
@@ -229,14 +246,14 @@ pub fn touch_button(
             Pos2::new(rect.left() + inset, rect.center().y),
             Align2::LEFT_CENTER,
             left,
-            FontId::new(28.0, FontFamily::Proportional),
+            FontId::new(left_sz, FontFamily::Proportional),
             palette::INK_PRIMARY,
         );
         p.text(
             Pos2::new(rect.right() - inset, rect.center().y),
             Align2::RIGHT_CENTER,
             right,
-            FontId::new(26.0, FontFamily::Monospace),
+            FontId::new(right_sz, FontFamily::Monospace),
             palette::INK_PRIMARY,
         );
     }

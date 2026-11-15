@@ -91,10 +91,10 @@ aegis-bio/
 
 ### Team (5 Members)
 
-- **Emir Samed Y.** — [@Nyxa48](https://github.com/Nyxa48) · *Project Lead, Systems Architecture, Physiological Engine, Database & LAN Sync*
+- **Emir Samed Y.** — [@Nyxa48](https://github.com/Nyxa48) · *Project Lead, Physiological Engine, Database & LAN Sync*
 - **Ege Canbaz** — [@Glarman](https://github.com/Glarman) · *UI Architecture & Extended Interface Engineering*
 - **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · *Dataset Research & Data Integration Analysis*
-- **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Workspace Modularization & Cross-Platform Application Scaffold*
+- **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Systems Architecture, Workspace Modularization & Cross-Platform Application Scaffold*
 - **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · *Research & General Project Support*
 
 ---
@@ -160,4 +160,4 @@ AEGIS-BIO, **WAL** (Write-Ahead Logging) modunda çalışan gömülü SQLite ver
 - **Ege Canbaz** — [@Glarman](https://github.com/Glarman) · *Arayüz Mimarisi & Genişletilmiş Arayüz Geliştirme*
 - **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · Veri Seti Araştırması & Veri Kullanım Analizi*
 - **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Sistem Mimarisi, Workspace Modülerizasyonu & Çapraz Platform Uygulama İskeleti*
-- **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · **Araştırma & Genel Proje Desteği*
+- **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · *Araştırma & Genel Proje Desteği*

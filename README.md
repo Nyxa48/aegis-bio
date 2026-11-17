@@ -1,12 +1,8 @@
 # AEGIS-BIO — NASA Space Apps 2026
 
-> **[English](#english-documentation)** · **[Türkçe](#türkçe-dokümantasyon)**
-
 **Challenge:** [Create Health Monitoring Software for Astronauts on Space Missions](https://www.spaceappschallenge.org/2026/challenges/health-monitoring-software/)
 
 ---
-
-## English Documentation
 
 **AEGIS-BIO** is an offline-first astronaut biometric monitoring and mission control software suite written in Rust (`eframe`/`egui`, `rusqlite`, `tokio`). Built for deep-space and orbital exploration scenarios—where Earth communication delays and habitat link blackouts are routine—the system combines an autonomous wrist/tablet **Astronaut Biomonitor (`biomon-mobile`)** with a **Mission Control Desktop Hub (`hub-desktop`)** backed by NASA open datasets.
 
@@ -96,68 +92,3 @@ aegis-bio/
 - **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · *Dataset Research & Data Integration Analysis*
 - **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Systems Architecture, Workspace Modularization & Cross-Platform Application Scaffold*
 - **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · *Research & General Project Support*
-
----
-
-## Türkçe Dokümantasyon
-
-**AEGIS-BIO**, **NASA Space Apps 2026** kapsamındaki *Create Health Monitoring Software for Astronauts on Space Missions* görevi için Rust (`eframe`/`egui`, `rusqlite`, `tokio`) ile geliştirilmiş, **çevrimdışı öncelikli (offline-first)** bir astronot biyometrik izleme ve görev kontrol yazılım sistemidir. Derin uzay ve yörünge görevlerinde iletişim gecikmeleri ile bağlantı kesintilerinin (blackout) olağan olduğu senaryolar düşünülerek tasarlanmıştır.
-
-### Sistem Mimarisi
-
-AEGIS-BIO, **WAL** (Write-Ahead Logging) modunda çalışan gömülü SQLite veritabanları ve yerel ağ TCP (NDJSON) senkronizasyonu ile haberleşen iki ana Rust crate'inden oluşur:
-
-1. **Astronot Biyomonitörü (`biomon-mobile`)** — Android tablet/bileklik (`space.aegisbio.biomon`, `aarch64-linux-android`, `sensorLandscape`, `minSdk 26` / `targetSdk 34`) ve masaüstü simülasyonu (`biomon-desktop-runner`) için çapraz platform HUD uygulaması.
-   - **4 Kadranlı Ana HUD:** Telefon, tablet ve masaüstü ekran oranlarına uyumlu duyarlı (responsive) düzeniyle `HEALTH & SUIT`, `HUB & NAV`, `COMMS` ve `HAZARD & ENV` panelleri.
-   - **Çift Kapsamlı ve Eldiven Dostu Arayüz:**
-     - **VIEW Modu:** Astronotun yalnızca canlı verileri dikkati dağılmadan görmesi için tam alan telemetri görünümü; detay ekranlarında herhangi bir yere dokunarak geri dönüş.
-     - **INPUT Modu:** ISS öğün kaydı (`%25` / `%50` / `%100` tüketim oranlarıyla), sıvı alımı, egzersiz kaydı, simülasyon senaryosu seçimi, yapay bağlantı kesintisi (blackout) testi ve yerel alarm onaylama kontrolleri.
-   - **Çevrimdışı Otonomi (`aegis_biomon.db`):** 1 Hz telemetri çerçevelerini, ekip girdilerini, 60 saniyelik uyku/aktigrafi pencerelerini, günlük SANS/osteoporoz durumlarını ve deterministik çevrimdışı müdahale protokollerini (`CARDIO`, `DECOMP`, `HYDRATION`, `HYPOXIA`, `RADIATION`) yerel olarak saklar.
-
-2. **Görev Kontrol Merkezi (`hub-desktop`)** — `0.0.0.0:7878` adresi üzerinden astronot düğümlerinden gelen TCP paketlerini dinleyen ve görev kayıtlarını `aegis_hub.db` veritabanında tutan masaüstü kontrol terminali.
-   - **CREW VITALS MONITOR:** Mürettebatın anlık hayati bulguları, şok indeksi, ortostatik risk, SANS riski ve LAN senkronizasyon durumu.
-   - **PHASE & STRESS CONTROL:** Görev fazı yönetimi (`LAUNCH`, `ORBIT`, `EVA`, `REENTRY`) ve stres/anomali senaryosu enjeksiyonu (`TACHYCARDIA SPIKE`, `HYPOXIA DROP`, `SOLAR PARTICLE RADIATION SPIKE`, `CABIN CO2 SCRUBBING FAILURE`, `SUIT DECOMPRESSION / N2 BREACH`, `HUB RANGE EXCURSION`).
-   - **MEDICAL & INCIDENT LOG:** Uçuş hekimi olay kayıtları, klinik notlar, astronot girdi geçmişi ve NASA OSDR referans laboratuvar verileri.
-   - **FOOD CATALOG & SYNC:** ISS uzay gıda kataloğu (`iss_food_catalog`), günlük beslenme ve SANS/osteoporoz özetleri, TCP sunucu metrikleri ve veri kaynağı doğrulama kayıtları (`dataset_provenance`).
-
-### Biyomedikal Modeller ve NASA Açık Veri Setleri
-
-- **Fizyolojik Motor & Risk Hesaplamaları (`calc.rs` & `sim.rs`):**
-  - **Keytel et al. (2005)** nabız temelli kalori harcaması (`kcal/sn`) ve deri sıcaklığına bağlı terleme sıvı kaybı hesabı.
-  - **NASA-STD-3001 Faz Bazlı Nabız Koridorları:** Görev fazına göre dinamik güvenlik eşikleri (`ORBIT`: `45–100 BPM`, `LAUNCH`/`REENTRY`: `70–150 BPM`, `EVA`: `75–160 BPM`).
-  - **Haldane Dekompresyon Modeli:** Azot oranı takibi (`HALDANE_HALF_TIME_MIN = 360.0`) ve EVA giysi basınç düşüşü algılama.
-  - **Hipoksi, Şok İndeksi, SANS ve Osteoporoz Modelleri:** SpO₂, doku O₂, Şok İndeksi (`HR / SBP`), sodyum + kabin CO₂ kaynaklı SANS riski ve egzersiz + kalsiyum + D3 vitamini koruma skoru takibi.
-  - **Dünya–Mars Işık Gecikmesi:** JPL Horizons efemeris verileriyle tek yönlü sinyal gecikmesi (`8.31675 dk/AU`) hesabı.
-- **NASA Referans Veri Setleri (`scripts/build_nasa_seed.py` -> `hub-desktop/data/nasa_seed.sql`):**
-  - **JPL Horizons:** Dünya–Mars mesafesi ve tek yönlü ışık süresi tablosu (`mission_ephemeris`).
-  - **NASA OSDR RadLab:** Tarihsel radyasyon soğurulan doz hızı zaman serisi (`reference_radiation_series`).
-  - **NASA OSDR EDA (RR-1):** ISS ve yer kontrol CO₂, sıcaklık ve nem karşılaştırma verileri (`reference_eda_environment`).
-  - **NASA OSDR Çalışmaları (`OSD-569`, `OSD-575`, `OSD-656`):** CBC, CMP, kardiyovasküler ve serum/idrar immün biyobelirteç panelleri (`research_lab_observations` & `hub_lab_reports`).
-
-### Kurulum ve Çalıştırma
-
-1. **Görev Kontrol Merkezini (Hub) Başlatın** (`0.0.0.0:7878` TCP dinleyicisini başlatır ve `aegis_hub.db` dosyasını hazırlar):
-   ```powershell
-   cargo run --bin hub-desktop
-   ```
-
-2. **Astronot Biyomonitörünü Başlatın** (`127.0.0.1:7878` adresine bağlanır ve `aegis_biomon.db` dosyasını hazırlar):
-   ```powershell
-   cargo run --bin biomon-desktop-runner
-   ```
-
-3. **Testler ve Workspace Doğrulaması:**
-   ```powershell
-   cargo test --workspace
-   cargo check --workspace --bins
-   ```
-
-> **Derleme Boyutu Notu:** [Cargo.toml](Cargo.toml) içinde tanımlı kompakt profiller (`debug = "line-tables-only"`, dış bağımlılıklar için `debug = 0`, release için `strip = "debuginfo"`) sayesinde geliştirme önbelleği (`target/`) diskte minimum yer kaplar. Hazır Android APK (`aegis-biomon.apk`) ve Windows EXE (`hub-desktop.exe`) paketlerine [GitHub Releases](https://github.com/Nyxa48/aegis-bio/releases) sayfasından ulaşabilirsiniz.
-
-### Ekip (5 Kişi)
-
-- **Emir Samed Y.** — [@Nyxa48](https://github.com/Nyxa48) · *Proje Lideri, Fizyolojik Motor, Veritabanı & LAN Senkronizasyonu*
-- **Ege Canbaz** — [@Glarman](https://github.com/Glarman) · *Arayüz Mimarisi & Genişletilmiş Arayüz Geliştirme*
-- **Emin Sancaklı** — [@eminsancakli1](https://github.com/eminsancakli1) · Veri Seti Araştırması & Veri Kullanım Analizi*
-- **Emre Düzcan** —[@Lykablyat](https://github.com/Lykablyat) · *Sistem Mimarisi, Workspace Modülerizasyonu & Çapraz Platform Uygulama İskeleti*
-- **Harun Karakoyun** —[@harunkarakoyuns](https://github.com/harunkarakoyuns) · *Araştırma & Genel Proje Desteği*
